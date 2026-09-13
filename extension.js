@@ -48,6 +48,11 @@ export let mmLayoutManager = null;
 
 const DASH_TO_DOCK_SCHEMA = 'org.gnome.shell.extensions.dash-to-dock';
 const DASH_TO_DOCK_MULTI_MONITOR_ID = 'multi-monitor';
+const DASH_TO_DOCK_UUID = 'dash-to-dock@micxgx.gmail.com';
+// Value of the shell's ExtensionState.ENABLED. Inlined rather than imported:
+// the module exposing it has moved between shell versions, and this extension
+// targets 45 through 50.
+const EXTENSION_STATE_ENABLED = 1;
 
 export default class MultiMonitorsExtension extends Extension {
 	constructor(metadata) {
@@ -85,6 +90,18 @@ export default class MultiMonitorsExtension extends Extension {
 			return new Gio.Settings({ settings_schema: schema });
 		} catch (_e) {
 			return null;
+		}
+	}
+
+	// True when Dash to Dock is installed and enabled, and therefore already
+	// drawing a dock on the primary monitor. Unknown/undeterminable counts as
+	// false so the hover dock still appears on a plain GNOME setup.
+	_dashToDockOwnsPrimary() {
+		try {
+			const ext = Main.extensionManager?.lookup?.(DASH_TO_DOCK_UUID);
+			return ext?.state === EXTENSION_STATE_ENABLED;
+		} catch (_e) {
+			return false;
 		}
 	}
 
@@ -252,7 +269,11 @@ export default class MultiMonitorsExtension extends Extension {
 		const newCount = Main.layoutManager.monitors.length;
 		const newPrimary = Main.layoutManager.primaryIndex;
 		const primaryMonitor = Main.layoutManager.monitors[newPrimary];
-		if (!primaryMonitor) {
+		// The Dash to Dock check has to precede the "already built" branch, or an
+		// existing dock would only ever be updated and never torn down.
+		if (!primaryMonitor || this._dashToDockOwnsPrimary()) {
+			// Dash to Dock already puts a dock on the primary monitor, so adding
+			// ours would leave the user looking at two.
 			this._destroyPrimaryDock();
 		} else if (this._primaryDock) {
 			this._primaryDock.updateMonitor(primaryMonitor);
