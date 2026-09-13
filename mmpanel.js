@@ -37,7 +37,7 @@ import * as MultiMonitors from './extension.js';
 import * as MMCalendar from './mmcalendar.js';
 import * as Constants from './mmPanelConstants.js';
 import { StatusIndicatorsController } from './statusIndicatorsController.js';
-import { MirroredIndicatorButton } from './mirroredIndicatorButton.js';
+import { MirroredIndicatorButton, matchSourceHPadding } from './mirroredIndicatorButton.js';
 
 MMCalendar.setMainRef(Main);
 
@@ -379,11 +379,16 @@ const MultiMonitorsPanel = GObject.registerClass(
             });
             this.add_child(this._centerBox);
 
-            // Wrapper inside center box to center its single child (dateMenu)
-            this._centerBin = new St.Widget({
-                layout_manager: new Clutter.BinLayout(),
-                x_expand: true,
+            // Wrapper inside the center box. It holds every center indicator
+            // in primary-panel order; _centerBox's own CENTER alignment keeps
+            // the group centred. A BinLayout here would stack them on top of
+            // one another, so this is a horizontal box that hugs its content.
+            this._centerBin = new St.BoxLayout({
+                name: 'panelCenterBin',
+                x_expand: false,
                 y_expand: true,  // Allow full height for dateMenu hover
+                x_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.FILL,
             });
             this._centerBox.add_child(this._centerBin);
 
@@ -1018,6 +1023,19 @@ const MultiMonitorsPanel = GObject.registerClass(
 
             this.statusArea[role] = indicator;
 
+            // Re-match the source's horizontal padding on every placement, not
+            // only when a mirror is first built. Enabling or disabling another
+            // extension changes the theme, which moves the source buttons'
+            // padding; a one-time copy leaves the mirrors at the old spacing
+            // until the whole extension is toggled.
+            const paddingSource = Main.panel.statusArea[role];
+            if (paddingSource && paddingSource !== indicator) {
+                if (typeof indicator._adoptSourceStyle === 'function')
+                    indicator._adoptSourceStyle();   // classes + inline + padding
+                else
+                    matchSourceHPadding(indicator, paddingSource);
+            }
+
             // Connect signals (like main Panel does)
             if (!indicator._mmDestroyId) {
                 indicator._mmDestroyId = indicator.connect('destroy', () => {
@@ -1046,8 +1064,8 @@ const MultiMonitorsPanel = GObject.registerClass(
 
             // If targeting center box, place the item in the center wrapper and center it
             if (box === this._centerBox && this._centerBin) {
-                // Remove any existing children from centerBin first
-                this._centerBin.remove_all_children();
+                // Every center indicator lives in the bin, at its primary-panel
+                // index. Clearing the bin per insert left only the last one.
                 container.x_align = Clutter.ActorAlign.CENTER;
                 // Use FILL for dateMenu so hover takes full panel height
                 if (role === 'dateMenu') {
@@ -1056,7 +1074,7 @@ const MultiMonitorsPanel = GObject.registerClass(
                 } else {
                     container.y_align = Clutter.ActorAlign.CENTER;
                 }
-                this._centerBin.add_child(container);
+                this._centerBin.insert_child_at_index(container, position);
             } else {
                 // Add to box at position
                 box.insert_child_at_index(container, position);
@@ -1089,6 +1107,9 @@ const MultiMonitorsPanel = GObject.registerClass(
             }
 
             // Indicators that should NOT be mirrored (system/accessibility indicators and GNOME 46 phantom indicators)
+            // 'keyboard' is deliberately absent: the input-source indicator is
+            // mirrored like any other, so the active layout is readable from
+            // whichever display you are looking at.
             const excludedIndicators = [
                 'a11y',              // Accessibility menu
                 'dwellClick',        // Dwell click accessibility
@@ -1096,7 +1117,6 @@ const MultiMonitorsPanel = GObject.registerClass(
                 'screenRecording',   // Screen recording indicator (alternative name)
                 'remoteAccess',      // Remote desktop indicator
                 'screenSharing',     // Screen sharing indicator
-                'keyboard',          // Keyboard layout (only needed on primary)
                 'power',             // Power indicator (only needed on primary)
                 'unsafeModeIndicator', // GNOME 46 unsafe mode (often empty)
                 'backgroundApps',    // GNOME 46 background apps indicator (often empty)
@@ -1137,15 +1157,16 @@ const MultiMonitorsPanel = GObject.registerClass(
                 return null;
             };
 
-            // Scan each box in main panel to preserve order
+            // Scan each box in main panel to preserve order. Hidden indicators
+            // are included: MirroredIndicatorButton watches its source's
+            // notify::visible and hides itself, whereas dropping the role here
+            // would take it out of desiredRoles and destroy the mirror -- with
+            // nothing to rebuild it, since an indicator that merely hides is
+            // still a child and fires no child-added.
             if (mainPanel._leftBox) {
                 let children = [];
                 cleanupSafely(() => { children = mainPanel._leftBox.get_children(); });
                 for (let child of children) {
-                    if (!child.visible) {
-                        continue;
-                    }
-
                     const role = findRoleForChild(child);
                     if (role) {
                         leftIndicators.push(role);
@@ -1157,10 +1178,6 @@ const MultiMonitorsPanel = GObject.registerClass(
                 let children = [];
                 cleanupSafely(() => { children = mainPanel._centerBox.get_children(); });
                 for (let child of children) {
-                    if (!child.visible) {
-                        continue;
-                    }
-
                     const role = findRoleForChild(child);
                     if (role) {
                         centerIndicators.push(role);
@@ -1172,10 +1189,6 @@ const MultiMonitorsPanel = GObject.registerClass(
                 let children = [];
                 cleanupSafely(() => { children = mainPanel._rightBox.get_children(); });
                 for (let child of children) {
-                    if (!child.visible) {
-                        continue;
-                    }
-
                     const role = findRoleForChild(child);
                     if (role) {
                         rightIndicators.push(role);
@@ -1186,7 +1199,13 @@ const MultiMonitorsPanel = GObject.registerClass(
             // ArcMenu replaces GNOME's Activities entry on the primary panel.
             // Mirror that behavior on extended panels by dropping our synthetic
             // activities/workspace-dot role whenever ArcMenu is present.
-            if (this._hasArcMenuRole([...leftIndicators, ...centerIndicators, ...rightIndicators])) {
+            // 'activities' belongs to _showActivities(), which honours the
+            // show-activities setting. The clone path must not resurrect it, or
+            // a disabled Activities button comes back on every resync.
+            const suppressActivities =
+                !this._settings?.get_boolean(SHOW_ACTIVITIES_ID) ||
+                this._hasArcMenuRole([...leftIndicators, ...centerIndicators, ...rightIndicators]);
+            if (suppressActivities) {
                 this._removeRole(leftIndicators, 'activities');
                 this._removeRole(centerIndicators, 'activities');
                 this._removeRole(rightIndicators, 'activities');
@@ -1249,7 +1268,11 @@ const MultiMonitorsPanel = GObject.registerClass(
                 return;
             }
 
-            let nChildren = box.get_n_children();
+            // Target index inside the box, advanced only for indicators we
+            // actually place, so skipped roles leave no gap. Each placement
+            // re-inserts at this index, which converges on the primary panel's
+            // order regardless of what the box held before.
+            let position = 0;
 
             for (let i = 0; i < elements.length; i++) {
                 let role = elements[i];
@@ -1262,14 +1285,18 @@ const MultiMonitorsPanel = GObject.registerClass(
                 try {
                     let indicator = this._ensureIndicator(role);
                     if (indicator) {
-                        // Skip indicators that are marked as empty (phantom buttons)
-                        if (indicator._isEmpty) {
-                            // Destroy the empty indicator to clean up
-                            this._destroyIndicator(role);
-                            continue;
-                        }
-                        this._addToPanelBox(role, indicator, i + nChildren, box);
-                    } else {
+                        // A mirror can be stranded empty when its source filled
+                        // in a descendant deeper than the watched first child.
+                        // Re-checking here recovers it, which the destroy-and-
+                        // rebuild this replaced used to do by accident.
+                        if (indicator._isEmpty && typeof indicator._syncMirrorPresence === 'function')
+                            indicator._syncMirrorPresence();
+
+                        // An empty indicator keeps its slot instead of being
+                        // destroyed: it is already hidden via the source's
+                        // notify::visible and refills itself when content returns.
+                        this._addToPanelBox(role, indicator, position, box);
+                        position++;
                     }
                 } catch (e) {
                     console.error('[Multi Monitors Add-On] _updateBox: ERROR for role', role, ':', e, e.stack);
@@ -1313,10 +1340,12 @@ MultiMonitorsPanel.prototype._ensureQuickSettingsRightmost = function () {
         }
     }
 
-    // Move/add to be the last item in the right box
+    // The clone pass already places quickSettings at the primary panel's own
+    // index. Only append when it has not been placed at all: forcing it
+    // rightmost pushed it past dateMenu, which the primary keeps last.
     const container = indicator.container ? indicator.container : indicator;
-    const parent = container.get_parent();
-    if (parent) parent.remove_child(container);
+    if (container.get_parent() === this._rightBox)
+        return;
     this._addToPanelBox(role, indicator, this._rightBox.get_n_children(), this._rightBox);
 };
 

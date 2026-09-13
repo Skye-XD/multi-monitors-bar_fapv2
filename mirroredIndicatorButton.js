@@ -86,6 +86,31 @@ const MMWorkspacePreviewLayout = GObject.registerClass(
         }
     });
 
+// The horizontal padding that sizes a panel button comes from theme selectors
+// a mirrored copy does not match, so it falls back to the .panel-button default
+// (12px) while its source sits at 8 -- or 0 for the date menu -- making every
+// copy 2x the difference too wide. Carry the resolved values across instead of
+// trying to reproduce the selectors. Shared, because indicators with a bespoke
+// implementation (dateMenu, appMenu) are not MirroredIndicatorButtons and need
+// the same treatment from the panel side.
+export function matchSourceHPadding(target, source, extraStyle) {
+    try {
+        // get_length() returns scaled pixels and inline style is scaled again
+        // on parse, so divide before writing the value back.
+        const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor || 1;
+        const node = source.get_theme_node();
+        const declarations = [];
+        if (extraStyle)
+            declarations.push(extraStyle.replace(/;\s*$/, ''));
+        for (const prop of ['-natural-hpadding', '-minimum-hpadding'])
+            declarations.push(`${prop}: ${Math.round(node.get_length(prop) / scale)}px`);
+        target.set_style(`${declarations.join('; ')};`);
+    } catch (_e) {
+        // The theme node is unavailable until the source is on stage. Spacing
+        // is cosmetic, so this must never abort the caller.
+    }
+}
+
 // Lightweight mirrored indicator that visually clones an existing indicator
 // (e.g., Vitals) from the main panel and opens its menu anchored to this button.
 export const MirroredIndicatorButton = GObject.registerClass(
@@ -185,42 +210,28 @@ export const MirroredIndicatorButton = GObject.registerClass(
         _initGenericIndicator(role) {
             this._sourceIndicator = Main.panel.statusArea[role] || null;
             this._isEmpty = false;
+            this._cloneBuilt = false;
 
-            if (this._sourceIndicator) {
-                this._sourceDestroyId = this._sourceIndicator.connect('destroy', () => {
-                    this._sourceDestroyId = 0;
-                    // Tear down while the source still exists, before its children
-                    // and clones are disposed by Clutter.
-                    this.destroy();
-                });
-                // Check if the source indicator has any visible content
-                const sourceChild = this._sourceIndicator.get_first_child();
-                if (!sourceChild) {
-                    this._markEmpty();
-                    return;
-                }
-
-                // Additional check: if the source indicator or its child is not visible, skip
-                if (!this._sourceIndicator.visible) {
-                    this._markEmpty();
-                    return;
-                }
-
-                // Check for empty BoxLayout with no visible children
-                if (sourceChild instanceof St.BoxLayout) {
-                    const visibleChildren = sourceChild.get_children().filter(c => c.visible);
-                    if (visibleChildren.length === 0) {
-                        this._markEmpty();
-                        return;
-                    }
-                }
-
-                this._createIndicatorClone();
-                this._setupSourcePresenceWatchers();
-                this._syncMirrorPresence();
-            } else {
+            if (!this._sourceIndicator) {
                 this._markEmpty();
+                return;
             }
+
+            this._sourceDestroyId = this._sourceIndicator.connect('destroy', () => {
+                this._sourceDestroyId = 0;
+                // Tear down while the source still exists, before its children
+                // and clones are disposed by Clutter.
+                this.destroy();
+            });
+
+            // A source with no content yet is normal -- panel indicators
+            // routinely populate after the mirror is constructed. Watch it
+            // either way and let _syncMirrorPresence() build the clone once
+            // content appears. Marking empty and returning here froze the
+            // mirror for the rest of the session, because no watcher was ever
+            // installed that could revive it.
+            this._setupSourcePresenceWatchers();
+            this._syncMirrorPresence();
         }
 
         _markEmpty() {
@@ -236,35 +247,37 @@ export const MirroredIndicatorButton = GObject.registerClass(
                 return;
             this._sourcePresenceWatched = true;
 
+            this._watchSourceActor(this._sourceIndicator,
+                ['notify::visible', 'notify::mapped', 'notify::allocation']);
+            this._watchSourceChild(this._sourceIndicator?.get_first_child());
+        }
+
+        // connectObject ties each handler to THIS button as the owner, so
+        // GJS auto-disconnects them when the button is destroyed — including
+        // C-side destruction when a monitor disappears on resume. Without
+        // this, handlers on the surviving Main.panel source indicator fire
+        // against the disposed button and crash gnome-shell.
+        _watchSourceActor(obj, signals) {
+            if (!obj)
+                return;
             const scheduleSync = () => this._syncMirrorPresence();
-            // connectObject ties each handler to THIS button as the owner, so
-            // GJS auto-disconnects them when the button is destroyed — including
-            // C-side destruction when a monitor disappears on resume. Without
-            // this, handlers on the surviving Main.panel source indicator fire
-            // against the disposed button and crash gnome-shell.
-            const watch = (obj, signal) => {
-                if (!obj)
-                    return;
+            for (const signal of signals) {
                 try {
                     obj.connectObject(signal, scheduleSync, this);
                 } catch (_e) {
                     // Signal availability varies by shell/extension actor type.
                 }
-            };
+            }
+        }
 
-            watch(this._sourceIndicator, 'notify::visible');
-            watch(this._sourceIndicator, 'notify::mapped');
-            watch(this._sourceIndicator, 'notify::allocation');
-
-            const sourceChild = this._sourceIndicator?.get_first_child();
+        // An indicator that rebuilds its contents swaps in a new first child,
+        // so the child-level watchers have to follow it.
+        _watchSourceChild(sourceChild) {
             this._sourcePresenceChild = sourceChild;
-            watch(sourceChild, 'notify::visible');
-            watch(sourceChild, 'notify::mapped');
-            watch(sourceChild, 'notify::allocation');
-            watch(sourceChild, 'actor-added');
-            watch(sourceChild, 'actor-removed');
-            watch(sourceChild, 'child-added');
-            watch(sourceChild, 'child-removed');
+            this._watchSourceActor(sourceChild, [
+                'notify::visible', 'notify::mapped', 'notify::allocation',
+                'actor-added', 'actor-removed', 'child-added', 'child-removed',
+            ]);
         }
 
         _syncMirrorPresence() {
@@ -274,15 +287,35 @@ export const MirroredIndicatorButton = GObject.registerClass(
                 return;
 
             const sourceChild = this._sourceIndicator.get_first_child();
+            if (sourceChild && sourceChild !== this._sourcePresenceChild)
+                this._watchSourceChild(sourceChild);
+
             const hasContent = this._sourceIndicator.visible &&
                 sourceChild &&
+                !this._isBlankContainer(sourceChild) &&
                 this._hasVisibleRenderableSourceContent(sourceChild);
+
+            // Build the clone the first time real content shows up, rather
+            // than only at construction.
+            if (hasContent && !this._cloneBuilt) {
+                this._cloneBuilt = true;
+                this._createIndicatorClone();
+            }
 
             this._isEmpty = !hasContent;
             this.visible = !!hasContent;
             this.reactive = !!hasContent;
             this.can_focus = !!hasContent;
             this.track_hover = !!hasContent;
+        }
+
+        // A layout box with no visible children renders as a blank button.
+        // _hasVisibleRenderableSourceContent() treats a childless actor as
+        // renderable (it may paint itself), so this stays a separate check --
+        // re-evaluated per sync, unlike the constructor-time guard it replaces.
+        _isBlankContainer(actor) {
+            return actor instanceof St.BoxLayout &&
+                actor.get_children().filter(child => child.visible).length === 0;
         }
 
         _hasVisibleRenderableSourceContent(actor) {
@@ -310,8 +343,30 @@ export const MirroredIndicatorButton = GObject.registerClass(
             return false;
         }
 
+        // PanelMenu.Button only gives us the theme's default .panel-button
+        // padding. An indicator that carries its own classes (or an inline
+        // style) is narrower or wider than that, so the mirror has to adopt
+        // them or it sits at different spacing than the source.
+        _adoptSourceStyle() {
+            const src = this._sourceIndicator;
+            if (!src)
+                return;
+            try {
+                const classes = src.get_style_class_name?.() || '';
+                for (const cls of classes.split(/\s+/)) {
+                    if (cls && !this.has_style_class_name(cls))
+                        this.add_style_class_name(cls);
+                }
+                matchSourceHPadding(this, src, src.get_style?.());
+            } catch (_e) {
+                // Style APIs vary by actor type; spacing is cosmetic, so a
+                // failure here must not abort building the clone.
+            }
+        }
+
         _createIndicatorClone() {
             try {
+                this._adoptSourceStyle();
                 const sourceChild = this._sourceIndicator.get_first_child();
                 if (!sourceChild) {
                     this._createFallbackIcon();
@@ -400,6 +455,11 @@ export const MirroredIndicatorButton = GObject.registerClass(
                         y_align: Clutter.ActorAlign.FILL,
                         y_expand: true,
                     });
+                    // The clone reproduces the fully styled source box, padding
+                    // included, so this wrapper must not apply that box's own
+                    // horizontal padding a second time -- doing so rendered the
+                    // mirror one padding-width wider than its source.
+                    container.set_style('padding-left: 0; padding-right: 0;');
                     this._createSimpleClone(container, sourceChild);
                     this.add_child(container);
                 } else {
@@ -1925,20 +1985,52 @@ export const MirroredIndicatorButton = GObject.registerClass(
             return false;
         }
 
+        // What the copied icons actually render: names, sizes and label text of
+        // every visible widget in the source. Rebuilding is only worthwhile when
+        // this changes.
+        _iconSourceSignature(source) {
+            const parts = [];
+            const walk = actor => {
+                if (!actor || actor.visible === false)
+                    return;
+                try {
+                    if (actor instanceof St.Icon)
+                        parts.push(`i:${actor.icon_name || actor.gicon?.to_string?.() || '?'}:${actor.icon_size}`);
+                    else if (actor instanceof St.Label)
+                        parts.push(`l:${actor.text ?? ''}`);
+                } catch (_e) {
+                    parts.push('?');   // a gicon that refuses to stringify
+                }
+                if (actor.get_children)
+                    actor.get_children().forEach(walk);
+            };
+            walk(source);
+            return parts.join('|');
+        }
+
         _startIconSync() {
             if (this._iconSyncId) {
                 GLib.source_remove(this._iconSyncId);
                 this._iconSyncId = null;
             }
 
-            // Full rebuild every 5 seconds to catch added/removed icons
+            this._iconSyncSignature = this._iconSource
+                ? this._iconSourceSignature(this._iconSource) : null;
+
+            // Poll every 5 seconds to catch added/removed icons. _copyIconsFromSource
+            // destroys and recreates every copy, which reads as a visible flicker, so
+            // only rebuild when what the source renders has actually changed.
             this._iconSyncId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => {
                 if (!this._iconContainer || !this._iconSource) {
                     this._iconSyncId = null;
                     return GLib.SOURCE_REMOVE;
                 }
 
-                this._copyIconsFromSource(this._iconContainer, this._iconSource);
+                const signature = this._iconSourceSignature(this._iconSource);
+                if (signature !== this._iconSyncSignature) {
+                    this._iconSyncSignature = signature;
+                    this._copyIconsFromSource(this._iconContainer, this._iconSource);
+                }
                 return GLib.SOURCE_CONTINUE;
             });
         }

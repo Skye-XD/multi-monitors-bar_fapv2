@@ -62,28 +62,27 @@
     min-height: 24px;
 }
 
-/* Quick Settings (system tray) in extended monitor - consistent padding */
+/* Quick Settings (system tray) on an extended monitor.
+   No horizontal padding: the source quickSettings on the primary panel
+   measures 0, and any added here shows up as a visibly wider gap between
+   the tray and its neighbours. Vertical/structural rules only. */
 .mm-quick-settings {
-    padding: 0 8px;
-    -natural-hpadding: 8px;
-    -minimum-hpadding: 8px;
+    padding: 0;
 }
 
 .mm-quick-settings-box {
-    padding: 0 6px;
+    padding: 0;
     margin: 0;
 }
 
-/* Clipping container for system tray - SAME padding as normal mode */
 .mm-quick-settings-clip {
-    padding: 0 6px;
+    padding: 0;
     margin: 0;
 }
 
-/* Normal and overview states should have SAME padding for consistency */
 .mm-quick-settings-normal,
 .mm-quick-settings-overview {
-    padding: 0 6px;
+    padding: 0;
 }
 
 /* Favorites menu in extended monitor - full height */
