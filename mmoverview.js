@@ -1637,6 +1637,32 @@ export const MultiMonitorsControlsManager = GObject.registerClass(
             this._focusedApp = null;
             this._appSearchProvider = null;
             this._searchEntry = null;
+
+            // Destroy the app views explicitly rather than only dropping the
+            // references. Nulling a field does not destroy a Clutter actor, and
+            // this manager queues GNOME's deferred redisplay work against its own
+            // AppDisplay -- that work is not cancelled when the display goes away,
+            // so it later runs over unparented icons and leaves them behind as
+            // stray labels on the primary grid.
+            this._destroyAppViews();
+        }
+
+        // Idempotent: _disconnectAll may run from both destroy() and the
+        // `destroy` signal when teardown comes from C.
+        _destroyAppViews() {
+            for (const field of ['_appDisplay', '_appGrid']) {
+                const actor = this[field];
+                this[field] = null;
+                if (!actor)
+                    continue;
+                try {
+                    actor.destroy();
+                } catch (_e) {
+                    // Already finalized from the C side; nothing left to do.
+                }
+            }
+            this._appDisplayVisible = false;
+            this._lastAppDisplayLayout = null;
         }
 
         destroy() {

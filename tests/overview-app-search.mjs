@@ -28,7 +28,7 @@ const context = vm.createContext({
 });
 context.Main.overview = {};
 const names = ['_populateAppGrid', '_onInstalledAppsChanged', '_syncAppGridState',
-    '_resetWorkspacesViewTransform', '_disconnectAll'];
+    '_resetWorkspacesViewTransform', '_disconnectAll', '_destroyAppViews'];
 const manager = vm.runInContext('({' + names.map(name => {
     const start = body.search(new RegExp('        (?:async )?' + name + '\\('));
     assert.ok(start >= 0, name);
