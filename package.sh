@@ -4,7 +4,7 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
 # Build a fresh archive from runtime sources only, never compiled schemas.
-archive="multi-monitors-bar@frederykabryan.shell-extension.zip"
+archive="multi-monitors-bar@skye-xd.github.io.shell-extension.zip"
 staging=$(mktemp -d)
 trap 'rm -rf -- "$staging"' EXIT
 

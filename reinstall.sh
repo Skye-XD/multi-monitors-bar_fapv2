@@ -1,7 +1,7 @@
 #!/bin/bash
 # Reinstall script for Multi Monitor Bar extension
 
-EXT_UUID="multi-monitors-bar@frederykabryan"
+EXT_UUID="multi-monitors-bar@skye-xd.github.io"
 EXT_DIR="$HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
