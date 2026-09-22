@@ -405,6 +405,12 @@ const MultiMonitorsPanel = GObject.registerClass(
             if (Clutter.ClickGesture) {
                 this._clickGesture = new Clutter.ClickGesture({
                     recognize_on_press: true,
+                    // Primary only. required_button defaults to 0, which means
+                    // any button, so without this a right- or middle-click on
+                    // the panel starts dragging whatever maximised window sits
+                    // under it. The button-press path below has always
+                    // filtered this way; the gesture rewrite lost it.
+                    required_button: Clutter.BUTTON_PRIMARY,
                 });
                 this._clickGestureRecognizeId = this._clickGesture.connect(
                     'recognize', this._onWindowDragGestureRecognize.bind(this));
