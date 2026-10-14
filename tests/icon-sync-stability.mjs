@@ -18,7 +18,7 @@ class StIcon extends Actor { }
 class StLabel extends Actor { }
 
 const context = vm.createContext({ St: { Icon: StIcon, Label: StLabel }, console });
-const sig = vm.runInContext(`({${method('_iconSourceSignature(source) {')}})._iconSourceSignature`, context);
+const sig = vm.runInContext(`({${method('_mirrorSourceSignature(actor) {')}})._mirrorSourceSignature`, context);
 const signatureOf = src => sig.call({}, src);
 
 // A tray icon that has not changed must produce a stable signature, so the

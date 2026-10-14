@@ -23,16 +23,17 @@ import GLib from 'gi://GLib';
 import Adw from 'gi://Adw';
 import { ExtensionPreferences, gettext as _ } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
+import { MonitorIndicatorPreferences } from './monitorIndicatorPrefs.js';
+
 const SHOW_PANEL_ID = 'show-panel';
-const SHOW_ACTIVITIES_ID = 'show-activities';
 const SHOW_APP_MENU_ID = 'show-app-menu';
-const SHOW_DATE_TIME_ID = 'show-date-time';
+const DATE_TIME_POSITION_ID = 'date-time-position';
+const SHOW_APP_INDICATORS_ID = 'show-app-indicators';
 const THUMBNAILS_SLIDER_POSITION_ID = 'thumbnails-slider-position';
 const ENABLE_HOT_CORNERS = 'enable-hot-corners';
 const SCREENSHOT_ON_ALL_MONITORS_ID = 'screenshot-on-all-monitors';
 const FORCE_WORKSPACES_ON_ALL_DISPLAYS_ID = 'force-workspaces-on-all-displays';
 const SHOW_OVERVIEW_ON_EXTENDED_MONITORS_ID = 'show-overview-on-extended-monitors';
-const PANEL_COLOR_ID = 'panel-color';
 const SHOW_DOCK_ON_EXTENDED_MONITORS_ID = 'show-dock-on-extended-monitors';
 
 
@@ -53,9 +54,15 @@ class MultiMonitorsPrefsWidget extends Gtk.Grid {
         this._monitors = this._display.get_monitors()
 
         this._addBooleanSwitch(_('Show Panel on additional monitors.'), SHOW_PANEL_ID);
-        this._addBooleanSwitch(_('Show Activities-Button on additional monitors.'), SHOW_ACTIVITIES_ID);
         this._addBooleanSwitch(_('Show AppMenu-Button on additional monitors.'), SHOW_APP_MENU_ID);
-        this._addBooleanSwitch(_('Show DateTime-Button on additional monitors.'), SHOW_DATE_TIME_ID);
+        this._addComboBoxSwitch(
+            _('Date and time position (all monitors)'), DATE_TIME_POSITION_ID, {
+                center: _('Center (default)'),
+                left: _('Left side'),
+                'right-before-tray': _('Right side, before system tray'),
+                'right-after-tray': _('Right side, after system tray'),
+            });
+        this._addBooleanSwitch(_('Show AppIndicators on additional monitors.'), SHOW_APP_INDICATORS_ID);
         this._addComboBoxSwitch(_('Show Thumbnails-Slider on additional monitors.'), THUMBNAILS_SLIDER_POSITION_ID, {
             none: _('No'),
             right: _('On the right'),
@@ -69,8 +76,6 @@ class MultiMonitorsPrefsWidget extends Gtk.Grid {
         this._addBooleanSwitch(_('Show App Grid and Search on extended monitors.'), SHOW_OVERVIEW_ON_EXTENDED_MONITORS_ID);
         this._addBooleanSwitch(_('Show dock on extended monitors.'), SHOW_DOCK_ON_EXTENDED_MONITORS_ID);
         this._addBooleanSwitch(_('Reveal dock on bottom-edge hover.'), 'reveal-dock-on-hover');
-
-        this._addColorPicker(_('Panel color on additional monitors.'), PANEL_COLOR_ID);
     }
 
     add(child) {
@@ -78,7 +83,7 @@ class MultiMonitorsPrefsWidget extends Gtk.Grid {
     }
 
     _addComboBoxSwitch(label, schema_id, options) {
-        this._addSettingsComboBoxSwitch(label, this._settings, schema_id, options)
+        return this._addSettingsComboBoxSwitch(label, this._settings, schema_id, options);
     }
 
     _addSettingsComboBoxSwitch(label, settings, schema_id, options) {
@@ -100,6 +105,7 @@ class MultiMonitorsPrefsWidget extends Gtk.Grid {
         this.add(gHBox);
 
         settings.bind(schema_id, gCBox, 'active-id', Gio.SettingsBindFlags.DEFAULT);
+        return gHBox;
     }
 
     _addBooleanSwitch(label, schema_id) {
@@ -120,58 +126,6 @@ class MultiMonitorsPrefsWidget extends Gtk.Grid {
 
         settings.bind(schema_id, gSwitch, 'active', Gio.SettingsBindFlags.DEFAULT);
     }
-
-    _addColorPicker(label, schema_id) {
-        let gHBox = new Gtk.Box({
-            orientation: Gtk.Orientation.HORIZONTAL,
-            margin_top: 10, margin_end: 10, margin_bottom: 10, margin_start: 10,
-            spacing: 20, hexpand: true
-        });
-        let gLabel = new Gtk.Label({ label: _(label), halign: Gtk.Align.START, hexpand: true });
-        gHBox.append(gLabel);
-
-        let colorBtn = new Gtk.ColorButton({
-            halign: Gtk.Align.END,
-            use_alpha: true,
-            title: _(label)
-        });
-
-        // Load saved color
-        let savedColor = this._settings.get_string(schema_id);
-        if (savedColor && savedColor !== '') {
-            let rgba = new Gdk.RGBA();
-            rgba.parse(savedColor);
-            colorBtn.set_rgba(rgba);
-        } else {
-            // Default: transparent (use system theme)
-            let rgba = new Gdk.RGBA();
-            rgba.parse('rgba(0,0,0,0)');
-            colorBtn.set_rgba(rgba);
-        }
-
-        colorBtn.connect('color-set', () => {
-            let rgba = colorBtn.get_rgba();
-            this._settings.set_string(schema_id, rgba.to_string());
-        });
-
-        gHBox.append(colorBtn);
-
-        // Reset button to clear custom color
-        let resetBtn = new Gtk.Button({
-            icon_name: 'edit-clear-symbolic',
-            tooltip_text: _('Reset to default theme color'),
-            halign: Gtk.Align.END
-        });
-        resetBtn.connect('clicked', () => {
-            this._settings.set_string(schema_id, '');
-            let rgba = new Gdk.RGBA();
-            rgba.parse('rgba(0,0,0,0)');
-            colorBtn.set_rgba(rgba);
-        });
-        gHBox.append(resetBtn);
-
-        this.add(gHBox);
-    }
 }
 
 const MultiMonitorsPrefsWidgetGObject = GObject.registerClass(MultiMonitorsPrefsWidget);
@@ -188,5 +142,11 @@ export default class MultiMonitorsExtensionPreferences extends ExtensionPreferen
         group.add(widget);
         page.add(group);
         window.add(page);
+        const monitorPreferences = new MonitorIndicatorPreferences(settings);
+        window.add(monitorPreferences.page);
+        window.connect('close-request', () => {
+            monitorPreferences.destroy();
+            return false;
+        });
     }
 }

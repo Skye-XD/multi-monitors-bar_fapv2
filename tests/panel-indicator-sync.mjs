@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { EXCLUDED_MIRROR_ROLES, sourceIsVisible } from '../monitorIndicatorPolicy.js';
 
 const source = readFileSync(new URL('../mmpanel.js', import.meta.url), 'utf8');
 
@@ -16,6 +17,8 @@ const cloneSrc = method('_cloneAllMainPanelIndicators', '_cloneAllMainPanelIndic
 const updateBoxSrc = method('_updateBox', '_updateBox(elements, box) {');
 // The center-box bug lived inside _addToPanelBox, so run the real one.
 const addToBoxSrc = method('_addToPanelBox', '_addToPanelBox(role, indicator, position, box) {');
+const centerRankSrc = method('_getMainCenterRank', '_getMainCenterRank(role) {');
+const centerIndexSrc = method('_getCenterInsertIndex', '_getCenterInsertIndex(role, position) {');
 // Prototype helper, declared at top level rather than inside the class body.
 const ensureQsStart = source.indexOf('MultiMonitorsPanel.prototype._ensureQuickSettingsRightmost');
 assert.ok(ensureQsStart > 0, 'could not locate _ensureQuickSettingsRightmost');
@@ -81,19 +84,24 @@ function makeMirror(mainPanel, settings = {}) {
         Main: { panel: mainPanel, layoutManager: { primaryIndex: 0 } },
         cleanupSafely: fn => fn(),
         SHOW_ACTIVITIES_ID: 'show-activities',
+        SHOW_APP_INDICATORS_ID: 'show-app-indicators',
+        SHOW_DATE_TIME_ID: 'show-date-time',
         MirroredIndicatorButton: class { },
         matchSourceHPadding() { },   // theme-node work, not exercised here
+        EXCLUDED_MIRROR_ROLES,
+        sourceIsVisible,
         Clutter: { ActorAlign: { CENTER: 'center', FILL: 'fill' } },
         console,
     });
     const clone = vm.runInContext(`({${cloneSrc}}).${'_cloneAllMainPanelIndicators'}`, context);
     const updateBox = vm.runInContext(`({${updateBoxSrc}}).${'_updateBox'}`, context);
     const addToPanelBox = vm.runInContext(`({${addToBoxSrc}}).${'_addToPanelBox'}`, context);
+    const centerHelpers = vm.runInContext(`({${centerRankSrc},\n${centerIndexSrc}})`, context);
 
     return {
         monitorIndex: 1,
         _destroyed: false,
-        _settings: { get_boolean: key => settings[key] ?? false },
+        _settings: { get_boolean: key => settings[key] ?? key === 'show-app-indicators' },
         statusArea: {},
         _leftBox: new Box('m-left'), _centerBox: new Box('m-center'), _rightBox: new Box('m-right'),
         _centerBin: new Box('m-center-bin'),
@@ -122,6 +130,10 @@ function makeMirror(mainPanel, settings = {}) {
             return this.statusArea[role];
         },
         _addToPanelBox: addToPanelBox,
+        _getMainCenterRank: centerHelpers._getMainCenterRank,
+        _getCenterInsertIndex: centerHelpers._getCenterInsertIndex,
+        _roleIsEnabled: () => true,
+        _showDateTime() { },   // date placement has its own test
         menuManager: { addMenu() { }, removeMenu() { } },
         _ensureQuickSettingsRightmost: vm.runInContext(`(${ensureQsSrc})`, context),
         // Mirrors _updatePanel(): clone pass, then the quickSettings helper.
@@ -206,30 +218,31 @@ function makeMirror(mainPanel, settings = {}) {
 }
 
 // 7. The center box keeps every center indicator, in order. A BinLayout that
-// was cleared per insert used to leave only the last one.
+// was cleared per insert used to leave only the last one. (dateMenu is placed
+// by its own date-time-position setting, not by this pass.)
 {
     const main = buildPanel({ _centerBox: [['Spacer', true], ['WeatherOrNot', true], ['dateMenu', true]] });
     const mirror = makeMirror(main, { 'show-activities': false });
     for (let i = 0; i < 3; i++) {
         mirror.sync();
-        assert.deepEqual(mirror._centerBin.roles(), ['Spacer', 'WeatherOrNot', 'dateMenu'],
+        assert.deepEqual(mirror._centerBin.roles(), ['Spacer', 'WeatherOrNot'],
             `every center indicator must survive (resync ${i + 1})`);
     }
 }
 
 // 8. quickSettings keeps the primary panel's own index. Forcing it rightmost
-// pushed it past dateMenu, which the primary keeps last.
+// pushed it past whatever the primary keeps after it.
 {
     const main = buildPanel({
-        _rightBox: [['lock-indicator', true], ['WeatherOrNot', true],
-                    ['quickSettings', true], ['dateMenu', true]],
+        _rightBox: [['lock-indicator', true], ['quickSettings', true],
+                    ['WeatherOrNot', true]],
     });
     const mirror = makeMirror(main, { 'show-activities': false });
     for (let i = 0; i < 3; i++) {
         mirror.sync();
         assert.deepEqual(mirror._rightBox.roles(),
-            ['lock-indicator', 'WeatherOrNot', 'quickSettings', 'dateMenu'],
-            `quickSettings must not jump past dateMenu (resync ${i + 1})`);
+            ['lock-indicator', 'quickSettings', 'WeatherOrNot'],
+            `quickSettings must not jump to the end (resync ${i + 1})`);
     }
 }
 
@@ -240,7 +253,7 @@ function makeMirror(mainPanel, settings = {}) {
     });
     const mirror = makeMirror(main, { 'show-activities': false });
     mirror.sync();
-    assert.deepEqual(mirror._rightBox.roles(), ['keyboard', 'quickSettings', 'dateMenu'],
+    assert.deepEqual(mirror._rightBox.roles(), ['keyboard', 'quickSettings'],
         'the input-source indicator must appear on extended panels');
 }
 

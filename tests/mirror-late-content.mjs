@@ -44,6 +44,8 @@ function makeButton(sourceIndicator) {
         Main: { panel: { statusArea: { widget: sourceIndicator } } },
         St: { Icon: StIcon, Label: StLabel, BoxLayout: StBoxLayout },
         Clutter: { Clone: ClutterClone },
+        GObject: { signal_lookup: () => 1 },
+        sourceIsVisible: actor => actor?.visible ?? false,
         console,
     });
     const methods = vm.runInContext(`({${parts}})`, context);

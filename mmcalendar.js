@@ -51,7 +51,7 @@ const MultiMonitorsTodayButton = GObject.registerClass(
                 can_focus: true,
             });
 
-            let hbox = new St.BoxLayout({ vertical: true });
+            let hbox = new St.BoxLayout({ ...Common.verticalBoxProps() });
             this.add_child(hbox);
 
             this._dayLabel = new St.Label({
@@ -128,7 +128,7 @@ const MultiMonitorsPlaceholder = GObject.registerClass(
         _init() {
             super._init({
                 style_class: 'message-list-placeholder',
-                vertical: true,
+                ...Common.verticalBoxProps(),
             });
             this._date = new Date();
 
@@ -140,59 +140,7 @@ const MultiMonitorsPlaceholder = GObject.registerClass(
         }
     });
 
-var MultiMonitorsCalendar = (() => {
-    let MultiMonitorsCalendar = class MultiMonitorsCalendar extends St.Widget {
-        _init() {
-            // Prefer the upstream constructor to build the full calendar (header + grid)
-            try {
-                Calendar.Calendar.prototype._init.call(this);
-                // Ensure we have a destroy handler even if upstream changes
-                this.connect('destroy', this._onDestroy.bind(this));
-                return;
-            } catch (e) {
-                // Fallback to a minimal calendar build compatible with our copyClass
-            }
-
-            this._weekStart = Shell.util_get_week_start();
-            this._settings = new Gio.Settings({ schema_id: 'org.gnome.desktop.calendar' });
-
-            // SHOW_WEEKDATE_KEY exists in GNOME 40+
-            if (shellVersion >= 40 && Calendar.SHOW_WEEKDATE_KEY) {
-                this._showWeekdateKeyId = this._settings.connect('changed::' + Calendar.SHOW_WEEKDATE_KEY, this._onSettingsChange.bind(this));
-                this._useWeekdate = this._settings.get_boolean(Calendar.SHOW_WEEKDATE_KEY);
-            } else {
-                this._showWeekdateKeyId = 0;
-                this._useWeekdate = false;
-            }
-
-            this._headerFormatWithoutYear = _('%OB');
-            this._headerFormat = _('%OB %Y');
-
-            // Start off with the current date
-            this._selectedDate = new Date();
-
-            this._shouldDateGrabFocus = false;
-
-            super._init({
-                style_class: 'calendar',
-                layout_manager: new Clutter.GridLayout(),
-                reactive: true,
-            });
-
-            // Build header and let upstream methods build the rest when setDate is called
-            this._buildHeader();
-        }
-
-        destroy() {
-            this._settings.disconnect(this._showWeekdateKeyId);
-            super.destroy();
-        }
-    };
-    Common.copyClass(Calendar.Calendar, MultiMonitorsCalendar);
-    return GObject.registerClass({
-        Signals: { 'selected-date-changed': { param_types: [GLib.DateTime.$gtype] } },
-    }, MultiMonitorsCalendar);
-})();
+const MultiMonitorsCalendar = Calendar.Calendar;
 
 var MultiMonitorsEventsSection = (() => {
     let MultiMonitorsEventsSection = class MultiMonitorsEventsSection extends St.Button {
@@ -203,7 +151,7 @@ var MultiMonitorsEventsSection = (() => {
                 x_expand: true,
                 child: new St.BoxLayout({
                     style_class: 'events-box',
-                    vertical: true,
+                    ...Common.verticalBoxProps(),
                     x_expand: true,
                 }),
             });
@@ -221,7 +169,7 @@ var MultiMonitorsEventsSection = (() => {
 
             this._eventsList = new St.BoxLayout({
                 style_class: 'events-list',
-                vertical: true,
+                ...Common.verticalBoxProps(),
                 x_expand: true,
             });
             this.child.add_child(this._eventsList);
@@ -339,7 +287,7 @@ var MultiMonitorsCalendarMessageList = (() => {
             this.add_child(this._placeholder);
 
             let box = new St.BoxLayout({
-                vertical: true,
+                ...Common.verticalBoxProps(),
                 x_expand: true, y_expand: true
             });
             this.add_child(box);
@@ -393,7 +341,7 @@ var MultiMonitorsCalendarMessageList = (() => {
 
             this._sectionList = new St.BoxLayout({
                 style_class: 'message-list-sections',
-                vertical: true,
+                ...Common.verticalBoxProps(),
                 x_expand: true,
                 y_expand: true,
                 y_align: Clutter.ActorAlign.START
@@ -629,12 +577,7 @@ var MultiMonitorsDateMenuButton = (() => {
             let hbox;
             let vbox;
 
-            try {
-                super._init(0.5);
-            } catch (e) {
-                console.error('[DATETIME CONSTRUCTOR] Error in super._init:', e, e.stack);
-                throw e;
-            }
+            super._init(0.5);
 
             this._clockDisplay = new St.Label({
                 style_class: 'clock',
@@ -757,7 +700,7 @@ var MultiMonitorsDateMenuButton = (() => {
             vbox.add_child(this._displaysSection);
 
             let displaysBox = new St.BoxLayout({
-                vertical: true,
+                ...Common.verticalBoxProps(),
                 x_expand: true,
                 style_class: 'datemenu-displays-box'
             });
@@ -822,11 +765,7 @@ var MultiMonitorsDateMenuButton = (() => {
                 singletons.push(MainRef.sessionMode);
             if (MainRef?.messageTray)
                 singletons.push(MainRef.messageTray);
-            try {
-                singletons.push(Shell.AppSystem.get_default());
-            } catch (_e) {
-                // No app system (should not happen); nothing to track.
-            }
+            singletons.push(Shell.AppSystem.get_default());
 
             for (const object of singletons) {
                 const connect = object.connect.bind(object);
@@ -848,11 +787,7 @@ var MultiMonitorsDateMenuButton = (() => {
 
         _mmDisconnectSingletonSignals() {
             for (const { object, id } of this._mmGlobalSignals) {
-                try {
-                    object.disconnect(id);
-                } catch (_e) {
-                    // Already dropped (e.g. by a signal tracker).
-                }
+                object.disconnect(id);
             }
             this._mmGlobalSignals = [];
         }
@@ -866,11 +801,7 @@ var MultiMonitorsDateMenuButton = (() => {
                 return;
 
             for (const id of ids) {
-                try {
-                    source.disconnect(id);
-                } catch (_e) {
-                    // Source already disposed.
-                }
+                source.disconnect(id);
             }
         }
 
@@ -971,11 +902,7 @@ var MultiMonitorsDateMenuButton = (() => {
             const eventSource = this._eventSource;
             this._eventSource = null;
             if (eventSource) {
-                try {
-                    eventSource.destroy();
-                } catch (e) {
-                    console.error('[MultiMonitors] failed to destroy date menu event source:', e);
-                }
+                eventSource.destroy();
             }
 
             this._mmDisconnectSingletonSignals();

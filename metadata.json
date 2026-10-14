@@ -5,7 +5,8 @@
         "47",
         "48",
         "49",
-        "50"
+        "50",
+        "51"
     ],
     "uuid": "multi-monitors-bar@skye-xd.github.io",
     "name": "Multi Monitor Bar",
@@ -14,7 +15,7 @@
     "description": "Fork of spin83's Multi Monitors. Pleaseeeee donate to support this extension :). Don't forget to star the original repository! , rate and comment",
     "copied_from_url": "https://github.com/spin83/multi-monitors-add-on.git",
     "url": "https://github.com/FrederykAbryan/multi-monitors-bar_fapv2",
-    "version": 48,
+    "version": 56,
     "donations": {
         "paypal": "multimonitorbar",
         "kofi": "frederykabryan"

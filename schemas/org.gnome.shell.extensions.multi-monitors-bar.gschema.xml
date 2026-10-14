@@ -8,6 +8,19 @@
       <description>Add or remove Multi Monitors indicator from Top Panel.</description>
     </key>
 
+    <key name="monitor-indicator-catalog" type="s">
+      <default>'{}'</default>
+      <summary>Connected monitors and available panel icons.</summary>
+      <description>Internal JSON snapshot published by the running extension for preferences.</description>
+    </key>
+
+    <key name="monitor-indicator-visibility" type="s">
+      <default>'{}'</default>
+      <summary>Panel icon visibility for each monitor.</summary>
+      <description>JSON visibility overrides by monitor connector and indicator role.
+        The main monitor uses the main key. Missing values follow the existing panel settings.</description>
+    </key>
+
     <key name="show-panel" type="b">
       <default>true</default>
       <summary>Show Panel on additional monitors.</summary>
@@ -30,6 +43,25 @@
       <default>true</default>
       <summary>Show DateTime-Button on additional monitors.</summary>
       <description>Change visibility of DateTime-Button on additional monitors.</description>
+    </key>
+
+    <key name="date-time-position" type="s">
+      <choices>
+        <choice value='center' />
+        <choice value='left' />
+        <choice value='right-before-tray' />
+        <choice value='right-after-tray' />
+      </choices>
+      <default>'center'</default>
+      <summary>Position of the DateTime-Button on all monitors.</summary>
+      <description>Place the button on every monitor in the center, on the left,
+        or on the right before or after Quick Settings.</description>
+    </key>
+
+    <key name="show-app-indicators" type="b">
+      <default>true</default>
+      <summary>Show AppIndicators on additional monitors.</summary>
+      <description>Change visibility of AppIndicator/tray icons on additional monitors.</description>
     </key>
 
     <key name="thumbnails-slider-position" type="s">
@@ -100,6 +132,14 @@
         theme color.</description>
     </key>
 
+    <key name="monitor-panel-layout" type="s">
+      <default>'{}'</default>
+      <summary>Panel position and color for each additional monitor.</summary>
+      <description>JSON object keyed by monitor connector. Each entry may set "position"
+        ('top', 'bottom', 'left' or 'right') and "color" (an RGBA string). Missing values
+        use the top edge and the shared panel-color.</description>
+    </key>
+
     <key name="show-dock-on-extended-monitors" type="b">
       <default>false</default>
       <summary>Show dock on extended monitors.</summary>
@@ -110,7 +150,7 @@
     </key>
 
     <key name="reveal-dock-on-hover" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Reveal the dock when hovering over the bottom edge.</summary>
       <description>Reveal the dock on the primary monitor by hovering over the
         bottom edge beneath it, including when only one display is connected.
