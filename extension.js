@@ -20,7 +20,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { ANIMATION_TIME } from 'resource:///org/gnome/shell/ui/overview.js';
-import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import { Extension, InjectionManager } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as PanelModule from 'resource:///org/gnome/shell/ui/panel.js';
 import * as LoginManager from 'resource:///org/gnome/shell/misc/loginManager.js';
 
@@ -36,11 +36,14 @@ import * as MMDock from './mmdock.js';
 import * as MMOverview from './mmoverview.js';
 import * as MMPanel from './mmpanel.js';
 import * as ScreenshotPatch from './screenshotPatch.js';
+import { MonitorIndicatorsController } from './monitorIndicatorsDialog.js';
+import { PANEL_LAYOUT_KEY, panelColor } from './monitorPanelPolicy.js';
 
 const MUTTER_SCHEMA = 'org.gnome.mutter';
 const WORKSPACES_ONLY_ON_PRIMARY_ID = 'workspaces-only-on-primary';
 
 const THUMBNAILS_SLIDER_POSITION_ID = 'thumbnails-slider-position';
+const DATE_TIME_POSITION_ID = 'date-time-position';
 
 export let mmPanel = [];
 export let mmOverview = null;
@@ -72,25 +75,24 @@ export default class MultiMonitorsExtension extends Extension {
 		this._resumeFromSleepId = null;
 		this._resumeSessionModeUpdatedId = null;
 		this._mainPanelClipState = null;
+		this._mainPanelInjectionManager = null;
 		this._showDockId = null;
 		this._dtdSettings = null;
 		this._savedDockMultiMonitor = null;
 		this._mainPanelEnsureIndicator = null;
+		this._mainDateMenuPlacement = null;
+		this._mainDateTimePositionId = null;
 		this._loginManager = null;
 	}
 
 	_getDashToDockSettings() {
-		try {
-			const schemaSource = Gio.SettingsSchemaSource.get_default();
-			if (!schemaSource)
-				return null;
-			const schema = schemaSource.lookup(DASH_TO_DOCK_SCHEMA, true);
-			if (!schema)
-				return null;
-			return new Gio.Settings({ settings_schema: schema });
-		} catch (_e) {
+		const schemaSource = Gio.SettingsSchemaSource.get_default();
+		if (!schemaSource)
 			return null;
-		}
+		const schema = schemaSource.lookup(DASH_TO_DOCK_SCHEMA, true);
+		if (!schema || !schema.has_key(DASH_TO_DOCK_MULTI_MONITOR_ID))
+			return null;
+		return new Gio.Settings({ settings_schema: schema });
 	}
 
 	// True when Dash to Dock is installed and enabled, and therefore already
@@ -113,32 +115,24 @@ export default class MultiMonitorsExtension extends Extension {
 		if (!this._dtdSettings)
 			return;
 
-		try {
-			if (enabled) {
-				// Save original value only on first apply
-				if (this._savedDockMultiMonitor === null)
-					this._savedDockMultiMonitor = this._dtdSettings.get_boolean(DASH_TO_DOCK_MULTI_MONITOR_ID);
-				this._dtdSettings.set_boolean(DASH_TO_DOCK_MULTI_MONITOR_ID, true);
-			} else {
-				// Restore original value if we previously saved one
-				if (this._savedDockMultiMonitor !== null) {
-					this._dtdSettings.set_boolean(DASH_TO_DOCK_MULTI_MONITOR_ID, this._savedDockMultiMonitor);
-					this._savedDockMultiMonitor = null;
-				}
+		if (enabled) {
+			// Save original value only on first apply
+			if (this._savedDockMultiMonitor === null)
+				this._savedDockMultiMonitor = this._dtdSettings.get_boolean(DASH_TO_DOCK_MULTI_MONITOR_ID);
+			this._dtdSettings.set_boolean(DASH_TO_DOCK_MULTI_MONITOR_ID, true);
+		} else {
+			// Restore original value if we previously saved one
+			if (this._savedDockMultiMonitor !== null) {
+				this._dtdSettings.set_boolean(DASH_TO_DOCK_MULTI_MONITOR_ID, this._savedDockMultiMonitor);
+				this._savedDockMultiMonitor = null;
 			}
-		} catch (_e) {
-			// Dash to Dock may not be installed or schema unavailable
 		}
 	}
 
 	_restoreDashToDockMultiMonitor() {
 		if (!this._dtdSettings || this._savedDockMultiMonitor === null)
 			return;
-		try {
-			this._dtdSettings.set_boolean(DASH_TO_DOCK_MULTI_MONITOR_ID, this._savedDockMultiMonitor);
-		} catch (_e) {
-			// Ignore
-		}
+		this._dtdSettings.set_boolean(DASH_TO_DOCK_MULTI_MONITOR_ID, this._savedDockMultiMonitor);
 		this._savedDockMultiMonitor = null;
 	}
 
@@ -168,16 +162,140 @@ export default class MultiMonitorsExtension extends Extension {
 			return;
 
 		for (const state of this._mainPanelClipState) {
-			try {
-				state.actor.clip_to_allocation = state.clipToAllocation;
-			} catch (_e) {
-			}
+			state.actor.clip_to_allocation = state.clipToAllocation;
 		}
 		this._mainPanelClipState = null;
 	}
 
+	_applyMainPanelColor() {
+		if (this._mainPanelStyle === undefined)
+			this._mainPanelStyle = Main.panel.get_style();
+		const color = panelColor(this._settings, 'main');
+		Main.panel.set_style(color
+			? `${this._mainPanelStyle ?? ''} background-color: ${color} !important;`
+			: this._mainPanelStyle);
+	}
+
+	_restoreMainPanelColor() {
+		if (this._mainPanelStyle === undefined)
+			return;
+		Main.panel.set_style(this._mainPanelStyle);
+		this._mainPanelStyle = undefined;
+	}
+
+	_applyMainPanelLayout() {
+		this._mainPanelInjectionManager = new InjectionManager();
+		const extension = this;
+		this._mainPanelInjectionManager.overrideMethod(PanelModule.Panel.prototype,
+			'vfunc_allocate', originalMethod => function (box) {
+				originalMethod.call(this, box);
+				if (this === Main.panel)
+					extension._allocateMainPanel(this, box);
+			});
+		Main.panel.queue_relayout();
+	}
+
+	_allocateMainPanel(panel, box) {
+		const width = Math.max(0, box.x2 - box.x1);
+		const height = Math.max(0, box.y2 - box.y1);
+		const [, rightNaturalWidth] = panel._rightBox.get_preferred_width(-1);
+		const rightWidth = Math.min(rightNaturalWidth, width);
+		const rightAllocation = panel._rightBox.get_allocation_box();
+		if (rightAllocation.get_width() >= rightWidth)
+			return;
+
+		// Shell caps each side at half the panel, even when the clock has
+		// moved into the status area. Let that area grow inward as icons arrive.
+		const [, leftNaturalWidth] = panel._leftBox.get_preferred_width(-1);
+		const [centerMinWidth, centerNaturalWidth] = panel._centerBox.get_preferred_width(-1);
+		const remainingWidth = width - rightWidth;
+		const leftWidth = Math.min(leftNaturalWidth,
+			Math.max(0, remainingWidth - centerMinWidth));
+		const centerWidth = Math.min(centerNaturalWidth, remainingWidth - leftWidth);
+		const rtl = panel.get_text_direction() === Clutter.TextDirection.RTL;
+		const centerAllocation = panel._centerBox.get_allocation_box();
+		const originalCenterStart = rtl ? width - centerAllocation.x2 : centerAllocation.x1;
+		const centerStart = Math.max(leftWidth,
+			Math.min(originalCenterStart, remainingWidth - centerWidth));
+
+		const allocate = (actor, start, end) => {
+			const childBox = new Clutter.ActorBox();
+			childBox.x1 = rtl ? width - end : start;
+			childBox.x2 = rtl ? width - start : end;
+			childBox.y1 = 0;
+			childBox.y2 = height;
+			actor.allocate(childBox);
+		};
+		allocate(panel._leftBox, 0, leftWidth);
+		allocate(panel._centerBox, centerStart, centerStart + centerWidth);
+		allocate(panel._rightBox, remainingWidth, width);
+	}
+
+	_restoreMainPanelLayout() {
+		this._mainPanelInjectionManager?.clear();
+		this._mainPanelInjectionManager = null;
+		Main.panel.queue_relayout();
+	}
+
+	_moveMainDateMenu(box, index) {
+		const container = this._mainDateMenuPlacement?.container;
+		if (!container || !box)
+			return;
+
+		const parent = container.get_parent();
+		if (parent === box && parent.get_children().indexOf(container) < index)
+			index--;
+		if (parent === box && parent.get_children().indexOf(container) === index)
+			return;
+		if (parent)
+			parent.remove_child(container);
+		box.insert_child_at_index(container, index);
+	}
+
+	_applyMainDateTimePosition() {
+		const panel = Main.panel;
+		const container = panel?.statusArea?.dateMenu?.container;
+		if (!container)
+			return;
+
+		if (!this._mainDateMenuPlacement || this._mainDateMenuPlacement.container !== container) {
+			const parent = container.get_parent();
+			if (!parent)
+				return;
+			this._mainDateMenuPlacement = {
+				container,
+				parent,
+				index: parent.get_children().indexOf(container),
+			};
+		}
+
+		const position = this._settings.get_string(DATE_TIME_POSITION_ID);
+		if (position === 'left') {
+			this._moveMainDateMenu(panel._leftBox, panel._leftBox.get_n_children());
+		} else if (position === 'right-before-tray' || position === 'right-after-tray') {
+			const box = panel._rightBox;
+			const tray = panel.statusArea.quickSettings;
+			const trayContainer = tray?.container || tray;
+			const trayIndex = box.get_children().indexOf(trayContainer);
+			const index = position === 'right-before-tray' && trayIndex >= 0
+				? trayIndex : box.get_n_children();
+			this._moveMainDateMenu(box, index);
+		} else {
+			const { parent, index } = this._mainDateMenuPlacement;
+			this._moveMainDateMenu(parent, index);
+		}
+	}
+
+	_restoreMainDateTimePosition() {
+		if (!this._mainDateMenuPlacement)
+			return;
+		const { parent, index } = this._mainDateMenuPlacement;
+		this._moveMainDateMenu(parent, index);
+		this._mainDateMenuPlacement = null;
+	}
+
 	_showThumbnailsSlider() {
-		log('[MultiMonitors] _showThumbnailsSlider called');
+
 
 		if (this._settings.get_boolean('force-workspaces-on-all-displays')) {
 			if (this._mu_settings.get_boolean(WORKSPACES_ONLY_ON_PRIMARY_ID))
@@ -193,16 +311,16 @@ export default class MultiMonitorsExtension extends Extension {
 		}
 
 		if (mmOverview) {
-			log('[MultiMonitors] mmOverview already exists, returning');
+
 			return;
 		}
 
 		mmOverview = [];
-		log('[MultiMonitors] Creating mmOverview array');
+
 
 		for (let idx = 0; idx < Main.layoutManager.monitors.length; idx++) {
 			if (idx != Main.layoutManager.primaryIndex) {
-				log('[MultiMonitors] Creating overview for monitor ' + idx);
+
 				mmOverview[idx] = new MMOverview.MultiMonitorsOverview(idx, this._settings);
 			}
 		}
@@ -284,8 +402,7 @@ export default class MultiMonitorsExtension extends Extension {
 				this._settings, { showInOverview: false });
 		}
 		if (this._mmMonitors !== newCount || this._primaryIndex !== newPrimary) {
-			log('[MultiMonitors] _relayout: monitors ' + this._mmMonitors + '->' + newCount +
-				', primary ' + this._primaryIndex + '->' + newPrimary);
+
 			this._mmMonitors = newCount;
 			this._primaryIndex = newPrimary;
 			this._hideThumbnailsSlider();
@@ -311,6 +428,13 @@ export default class MultiMonitorsExtension extends Extension {
 		this._settings = this.getSettings();
 		this._mu_settings = new Gio.Settings({ schema: MUTTER_SCHEMA });
 		this._applyMainPanelClipping();
+		this._applyMainPanelLayout();
+		this._mainDateTimePositionId = this._settings.connect('changed::' + DATE_TIME_POSITION_ID,
+			this._applyMainDateTimePosition.bind(this));
+		this._applyMainDateTimePosition();
+		this._settings.connectObject('changed::' + PANEL_LAYOUT_KEY,
+			this._applyMainPanelColor.bind(this), this);
+		this._applyMainPanelColor();
 
 		this._switchOffThumbnailsMuId = this._mu_settings.connect('changed::' + WORKSPACES_ONLY_ON_PRIMARY_ID,
 			this._switchOffThumbnails.bind(this));
@@ -335,6 +459,11 @@ export default class MultiMonitorsExtension extends Extension {
 			this._applyDashToDockMultiMonitor.bind(this));
 		this._applyDashToDockMultiMonitor();
 
+		mmPanel.length = 0;
+		MMLayout.setMMPanelArrayRef(mmPanel);
+		MMPanel.setMMPanelArrayRef(mmPanel);
+		MMOverview.setMMPanelArrayRef(mmPanel);
+
 		mmLayoutManager = new MMLayout.MultiMonitorsLayoutManager(this._settings);
 
 		this._showPanelId = this._settings.connect('changed::' + MMLayout.SHOW_PANEL_ID, mmLayoutManager.showPanel.bind(mmLayoutManager));
@@ -355,10 +484,6 @@ export default class MultiMonitorsExtension extends Extension {
 					this._onResumeFromSleep();
 			});
 
-		mmPanel.length = 0;
-		MMLayout.setMMPanelArrayRef(mmPanel);
-		MMPanel.setMMPanelArrayRef(mmPanel);
-		MMOverview.setMMPanelArrayRef(mmPanel);
 
 		if (!this._mainPanelEnsureIndicator)
 			this._mainPanelEnsureIndicator = Main.panel._ensureIndicator;
@@ -382,134 +507,12 @@ export default class MultiMonitorsExtension extends Extension {
 
 		// Patch screenshot UI to open on cursor's monitor (or all monitors based on setting)
 		ScreenshotPatch.patchScreenshotUI(this._settings);
-	}
-
-	/**
-	 * Called just before the system suspends.  Tear down all extra-monitor
-	 * chrome so GNOME Shell's layout regions are clean when the lock
-	 * screen dialog is positioned on wake.
-	 */
-	_onPrepareForSleep() {
-		this._destroyPrimaryDock();
-		log('[MultiMonitors] _onPrepareForSleep: cleaning up before suspend');
-		if (this._resumeFromSleepId) {
-			GLib.source_remove(this._resumeFromSleepId);
-			this._resumeFromSleepId = null;
-		}
-		this._disconnectResumeSessionWatcher();
-
-		if (mmLayoutManager) {
-			mmLayoutManager.hidePanel();
-		}
-		this._hideThumbnailsSlider();
-		this._mmMonitors = 0;
-		this._primaryIndex = -1;
-		mmPanel.length = 0;
-	}
-
-	/**
-	 * Called after wake.  Rebuild secondary-monitor chrome after GNOME Shell has
-	 * restored monitor/workarea state, otherwise mirrored indicators can keep
-	 * stale source/menu references from before suspend.
-	 */
-	_onResumeFromSleep() {
-		log('[MultiMonitors] _onResumeFromSleep: scheduling rebuild after wake');
-		this._queueResumeRebuild(1000);
-	}
-
-	_queueResumeRebuild(delayMs) {
-		if (this._resumeFromSleepId)
-			GLib.source_remove(this._resumeFromSleepId);
-
-		this._resumeFromSleepId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delayMs, () => {
-			this._resumeFromSleepId = null;
-
-			if (!this._settings)
-				return GLib.SOURCE_REMOVE;
-
-			if (!this._isUserSessionActive()) {
-				log('[MultiMonitors] Resume rebuild waiting for unlocked user session');
-				this._waitForUserSessionResume();
-				return GLib.SOURCE_REMOVE;
-			}
-
-			if (!this._isOverviewIdle()) {
-				log('[MultiMonitors] Resume rebuild waiting for overview to become idle');
-				this._queueResumeRebuild(500);
-				return GLib.SOURCE_REMOVE;
-			}
-
-			this._disconnectResumeSessionWatcher();
-			this._rebuildAfterResume();
-			return GLib.SOURCE_REMOVE;
-		});
-	}
-
-	_isUserSessionActive() {
-		const sessionMode = Main.sessionMode;
-		if (!sessionMode)
-			return true;
-
-		if (sessionMode.isLocked)
-			return false;
-
-		return !sessionMode.currentMode || sessionMode.currentMode === 'user';
-	}
-
-	_isOverviewIdle() {
-		return !Main.overview?.visible && !Main.overview?.animationInProgress;
-	}
-
-	_waitForUserSessionResume() {
-		if (this._resumeSessionModeUpdatedId)
-			return;
-
-		this._resumeSessionModeUpdatedId = Main.sessionMode.connect('updated', () => {
-			if (!this._isUserSessionActive())
-				return;
-
-			this._disconnectResumeSessionWatcher();
-			this._queueResumeRebuild(750);
-		});
-	}
-
-	_disconnectResumeSessionWatcher() {
-		if (!this._resumeSessionModeUpdatedId)
-			return;
-
-		Main.sessionMode.disconnect(this._resumeSessionModeUpdatedId);
-		this._resumeSessionModeUpdatedId = null;
-	}
-
-	_rebuildAfterResume() {
-		log('[MultiMonitors] Rebuilding secondary monitor chrome after resume');
-
-		if (!mmLayoutManager) {
-			mmLayoutManager = new MMLayout.MultiMonitorsLayoutManager(this._settings);
-
-			if (this._showPanelId) {
-				this._settings.disconnect(this._showPanelId);
-				this._showPanelId = null;
-			}
-			this._showPanelId = this._settings.connect('changed::' + MMLayout.SHOW_PANEL_ID,
-				mmLayoutManager.showPanel.bind(mmLayoutManager));
-		} else {
-			mmLayoutManager.hidePanel();
-		}
-
-		mmPanel.length = 0;
-		MMLayout.setMMPanelArrayRef(mmPanel);
-		MMPanel.setMMPanelArrayRef(mmPanel);
-		MMOverview.setMMPanelArrayRef(mmPanel);
-
-		mmLayoutManager.showPanel();
-		this._hideThumbnailsSlider();
-		this._mmMonitors = 0;
-		this._primaryIndex = -1;
-		this._relayout();
+		this._monitorIndicators = new MonitorIndicatorsController(this._settings, () => mmPanel);
 	}
 
 	disable() {
+		this._monitorIndicators?.destroy();
+		this._monitorIndicators = null;
 		this._destroyPrimaryDock();
 		// Unpatch screenshot UI
 		ScreenshotPatch.unpatchScreenshotUI();
@@ -562,6 +565,14 @@ export default class MultiMonitorsExtension extends Extension {
 			this._settings.disconnect(this._thumbnailsSliderPositionId);
 			this._thumbnailsSliderPositionId = null;
 		}
+		if (this._mainDateTimePositionId) {
+			this._settings.disconnect(this._mainDateTimePositionId);
+			this._mainDateTimePositionId = null;
+		}
+		this._restoreMainDateTimePosition();
+		this._settings.disconnectObject(this);
+		this._restoreMainPanelColor();
+		this._restoreMainPanelLayout();
 
 		this._restoreMainPanelClipping();
 
@@ -583,5 +594,131 @@ export default class MultiMonitorsExtension extends Extension {
 
 		this._settings = null;
 		this._mu_settings = null;
+	}
+
+
+	/**
+	 * Called just before the system suspends.  Tear down all extra-monitor
+	 * chrome so GNOME Shell's layout regions are clean when the lock
+	 * screen dialog is positioned on wake.
+	 */
+	_onPrepareForSleep() {
+		this._destroyPrimaryDock();
+
+		if (this._resumeFromSleepId) {
+			GLib.source_remove(this._resumeFromSleepId);
+			this._resumeFromSleepId = null;
+		}
+		this._disconnectResumeSessionWatcher();
+
+		if (mmLayoutManager) {
+			mmLayoutManager.hidePanel();
+		}
+		this._hideThumbnailsSlider();
+		this._mmMonitors = 0;
+		this._primaryIndex = -1;
+		mmPanel.length = 0;
+	}
+
+	/**
+	 * Called after wake.  Rebuild secondary-monitor chrome after GNOME Shell has
+	 * restored monitor/workarea state, otherwise mirrored indicators can keep
+	 * stale source/menu references from before suspend.
+	 */
+	_onResumeFromSleep() {
+
+		this._queueResumeRebuild(1000);
+	}
+
+	_queueResumeRebuild(delayMs) {
+		if (this._resumeFromSleepId)
+			GLib.source_remove(this._resumeFromSleepId);
+
+		this._resumeFromSleepId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delayMs, () => {
+			this._resumeFromSleepId = null;
+
+			if (!this._settings)
+				return GLib.SOURCE_REMOVE;
+
+			if (!this._isUserSessionActive()) {
+
+				this._waitForUserSessionResume();
+				return GLib.SOURCE_REMOVE;
+			}
+
+			if (!this._isOverviewIdle()) {
+
+				this._queueResumeRebuild(500);
+				return GLib.SOURCE_REMOVE;
+			}
+
+			this._disconnectResumeSessionWatcher();
+			this._rebuildAfterResume();
+			return GLib.SOURCE_REMOVE;
+		});
+	}
+
+	_isUserSessionActive() {
+		const sessionMode = Main.sessionMode;
+		if (!sessionMode)
+			return true;
+
+		if (sessionMode.isLocked)
+			return false;
+
+		return !sessionMode.currentMode || sessionMode.currentMode === 'user';
+	}
+
+	_isOverviewIdle() {
+		return !Main.overview?.visible && !Main.overview?.animationInProgress;
+	}
+
+	_waitForUserSessionResume() {
+		if (this._resumeSessionModeUpdatedId)
+			return;
+
+		this._resumeSessionModeUpdatedId = Main.sessionMode.connect('updated', () => {
+			if (!this._isUserSessionActive())
+				return;
+
+			this._disconnectResumeSessionWatcher();
+			this._queueResumeRebuild(750);
+		});
+	}
+
+	_disconnectResumeSessionWatcher() {
+		if (!this._resumeSessionModeUpdatedId)
+			return;
+
+		Main.sessionMode.disconnect(this._resumeSessionModeUpdatedId);
+		this._resumeSessionModeUpdatedId = null;
+	}
+
+	_rebuildAfterResume() {
+
+
+		if (!mmLayoutManager) {
+			mmLayoutManager = new MMLayout.MultiMonitorsLayoutManager(this._settings);
+
+			if (this._showPanelId) {
+				this._settings.disconnect(this._showPanelId);
+				this._showPanelId = null;
+			}
+			this._showPanelId = this._settings.connect('changed::' + MMLayout.SHOW_PANEL_ID,
+				mmLayoutManager.showPanel.bind(mmLayoutManager));
+		} else {
+			mmLayoutManager.hidePanel();
+		}
+
+		mmPanel.length = 0;
+		MMLayout.setMMPanelArrayRef(mmPanel);
+		MMPanel.setMMPanelArrayRef(mmPanel);
+		MMOverview.setMMPanelArrayRef(mmPanel);
+
+		mmLayoutManager.showPanel();
+		this._hideThumbnailsSlider();
+		this._mmMonitors = 0;
+		this._primaryIndex = -1;
+		this._relayout();
 	}
 }
