@@ -18,6 +18,11 @@ class StIcon extends Actor { }
 class StLabel extends Actor { }
 
 const context = vm.createContext({ St: { Icon: StIcon, Label: StLabel }, console });
+{
+    const start = source.indexOf('const _giconIds');
+    assert.ok(start > 0, 'could not locate giconIdentity');
+    vm.runInContext(source.slice(start, source.indexOf('\n}\n', start) + 3), context);
+}
 const sig = vm.runInContext(`({${method('_mirrorSourceSignature(actor) {')}})._mirrorSourceSignature`, context);
 const signatureOf = src => sig.call({}, src);
 
@@ -65,6 +70,19 @@ const signatureOf = src => sig.call({}, src);
 
     label.text = '6';
     assert.notEqual(signatureOf(src), before, 'changed label text must trigger a rebuild');
+}
+
+// An appindicator gicon does not stringify; a swapped gicon object must still
+// be detected, and the same object must stay stable.
+{
+    const gicon = { to_string: () => null };
+    const icon = new StIcon({ gicon, icon_size: 16 });
+    const src = new Actor({ children: [icon] });
+    const before = signatureOf(src);
+    assert.equal(signatureOf(src), before, 'an unchanged gicon must not churn');
+
+    icon.gicon = { to_string: () => null };
+    assert.notEqual(signatureOf(src), before, 'a swapped gicon must trigger a rebuild');
 }
 
 console.log('icon-sync-stability: all assertions passed');

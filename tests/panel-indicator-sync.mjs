@@ -101,7 +101,8 @@ function makeMirror(mainPanel, settings = {}) {
     return {
         monitorIndex: 1,
         _destroyed: false,
-        _settings: { get_boolean: key => settings[key] ?? key === 'show-app-indicators' },
+        // show-date-time and show-app-indicators default to true in the schema.
+        _settings: { get_boolean: key => ({ 'show-date-time': true, 'show-app-indicators': true, ...settings })[key] ?? false },
         statusArea: {},
         _leftBox: new Box('m-left'), _centerBox: new Box('m-center'), _rightBox: new Box('m-right'),
         _centerBin: new Box('m-center-bin'),
@@ -279,6 +280,17 @@ function makeMirror(mainPanel, settings = {}) {
         const counts = Object.values(mirror.statusArea).map(ind => ind.adoptCount);
         assert.ok(counts.every(c => c === i),
             `every mirror must re-adopt its source style on refresh ${i}, got ${counts}`);
+    }
+}
+
+// A disabled date menu must not be recreated by the clone path either.
+{
+    const main = buildPanel({ _centerBox: [['Spacer', true], ['dateMenu', true]] });
+    const mirror = makeMirror(main, { 'show-date-time': false });
+    for (let i = 0; i < 3; i++) {
+        mirror.sync();
+        assert.deepEqual(mirror._centerBin.roles(), ['Spacer'],
+            `show-date-time=false must keep dateMenu off the extended panel (resync ${i + 1})`);
     }
 }
 

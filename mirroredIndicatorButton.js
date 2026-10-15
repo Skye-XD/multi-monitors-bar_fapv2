@@ -22,6 +22,7 @@ import Atk from 'gi://Atk';
 import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -32,6 +33,18 @@ import { setBoxVertical, shellVersion } from './common.js';
 // a side bar, so side bars use a class of their own for the name.
 function workspaceNameClass(vertical) {
     return vertical ? 'mm-workspace-name' : 'status-label';
+}
+
+// appindicatorsupport wraps its icons in a Gio.EmblemedIcon subclass whose
+// to_tokens() is disabled, so to_string() is null for every tray icon. It
+// swaps in a new gicon object whenever the icon changes, so object identity
+// is what the icon-sync signature can compare instead.
+const _giconIds = new WeakMap();
+let _nextGiconId = 0;
+function giconIdentity(gicon) {
+    if (!_giconIds.has(gicon))
+        _giconIds.set(gicon, ++_nextGiconId);
+    return `#${_giconIds.get(gicon)}`;
 }
 
 const MMWorkspacePreviewLayout = GObject.registerClass(
@@ -307,8 +320,19 @@ export const MirroredIndicatorButton = GObject.registerClass(
                 return;
 
             const sourceChild = this._sourceIndicator.get_first_child();
-            if (sourceChild && sourceChild !== this._sourcePresenceChild)
+            if (sourceChild && sourceChild !== this._sourcePresenceChild) {
                 this._watchSourceChild(sourceChild);
+                // The clone was built from the child just replaced, so it now
+                // shows a stale or destroyed actor. Tearing a built clone down
+                // in place would duplicate _cleanup(); have the panel rebuild
+                // the whole mirror instead (_removeStaleIndicators).
+                // A build still pending reads the new child when it runs.
+                if (this._cloneBuilt && !this._cloneBuildLaterId &&
+                    !this._sourceChildSwapped) {
+                    this._sourceChildSwapped = true;
+                    this._panel?._schedulePanelRefresh?.([50, 250, 1000]);
+                }
+            }
 
             const hasContent = sourceIsVisible(this._sourceIndicator) &&
                 sourceChild &&
@@ -316,10 +340,18 @@ export const MirroredIndicatorButton = GObject.registerClass(
                 this._hasVisibleRenderableSourceContent(sourceChild);
 
             // Build the clone the first time real content shows up, rather
-            // than only at construction.
+            // than only at construction. This usually runs from a source's
+            // notify::allocation, i.e. mid-layout, so build before the next
+            // redraw rather than adding children inside the layout pass.
             if (hasContent && !this._cloneBuilt) {
                 this._cloneBuilt = true;
-                this._createIndicatorClone();
+                this._cloneBuildLaterId = global.compositor.get_laters().add(
+                    Meta.LaterType.BEFORE_REDRAW, () => {
+                        this._cloneBuildLaterId = 0;
+                        if (!this._destroyed && this._sourceIndicator)
+                            this._createIndicatorClone();
+                        return GLib.SOURCE_REMOVE;
+                    });
             }
 
             this._isEmpty = !hasContent;
@@ -373,7 +405,12 @@ export const MirroredIndicatorButton = GObject.registerClass(
                 return;
             try {
                 const classes = src.get_style_class_name?.() || '';
+                // The Astra mirror drops panel-button on purpose (see
+                // _createIndicatorClone); a resync must not put it back.
+                const astra = this.has_style_class_name('mm-astra-monitor');
                 for (const cls of classes.split(/\s+/)) {
+                    if (astra && cls === 'panel-button')
+                        continue;
                     if (cls && !this.has_style_class_name(cls))
                         this.add_style_class_name(cls);
                 }
@@ -1991,7 +2028,8 @@ export const MirroredIndicatorButton = GObject.registerClass(
                 }
 
                 if (node instanceof St.Icon) {
-                    const id = node.icon_name || (node.gicon ? node.gicon.to_string() : '') || '';
+                    const id = node.icon_name || node.gicon?.to_string?.() ||
+                        (node.gicon ? giconIdentity(node.gicon) : '');
                     parts.push(`i:${id}:${node.icon_size || 0}`);
                 } else if (node instanceof St.Label) {
                     parts.push(`l:${node.text || ''}`);
@@ -3230,6 +3268,11 @@ export const MirroredIndicatorButton = GObject.registerClass(
             this._disconnectMirroredClockDisplay();
             this._disconnectLabelCopyBindings();
             this._disconnectIconSyncSource();
+
+            if (this._cloneBuildLaterId) {
+                cleanupSafely(() => global.compositor.get_laters().remove(this._cloneBuildLaterId));
+                this._cloneBuildLaterId = 0;
+            }
 
             if (this._forwardClickTimeoutId) {
                 GLib.source_remove(this._forwardClickTimeoutId);

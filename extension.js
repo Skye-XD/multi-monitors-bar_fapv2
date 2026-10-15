@@ -71,6 +71,7 @@ export default class MultiMonitorsExtension extends Extension {
 		this._showPanelId = null;
 		this._thumbnailsSliderPositionId = null;
 		this._relayoutId = null;
+		this._dtdStateChangedId = null;
 		this._prepareForSleepId = null;
 		this._resumeFromSleepId = null;
 		this._resumeSessionModeUpdatedId = null;
@@ -471,6 +472,12 @@ export default class MultiMonitorsExtension extends Extension {
 
 		this._thumbnailsSliderPositionId = this._settings.connect('changed::' + THUMBNAILS_SLIDER_POSITION_ID, this._showThumbnailsSlider.bind(this));
 		this._relayoutId = Main.layoutManager.connect('monitors-changed', this._relayout.bind(this));
+		// Dash to Dock being enabled or disabled at runtime changes who owns
+		// the primary dock just as a monitor change does.
+		this._dtdStateChangedId = Main.extensionManager.connect('extension-state-changed', (_mgr, ext) => {
+			if (ext?.uuid === DASH_TO_DOCK_UUID)
+				this._relayout();
+		});
 		this._relayout();
 
 		// Proactively tear down extra panels before suspend so the lock
@@ -532,6 +539,11 @@ export default class MultiMonitorsExtension extends Extension {
 		if (this._relayoutId) {
 			Main.layoutManager.disconnect(this._relayoutId);
 			this._relayoutId = null;
+		}
+
+		if (this._dtdStateChangedId) {
+			Main.extensionManager.disconnect(this._dtdStateChangedId);
+			this._dtdStateChangedId = null;
 		}
 
 		if (this._switchOffThumbnailsMuId) {
