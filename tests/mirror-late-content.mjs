@@ -39,6 +39,15 @@ class StLabel extends Actor { }
 class StBoxLayout extends Actor { }
 class ClutterClone extends Actor { }
 
+// The clone is built from a BEFORE_REDRAW later; flush() runs pending ones.
+let laters = new Map();
+let nextLaterId = 0;
+const flush = () => {
+    const pending = [...laters.values()];
+    laters = new Map();
+    pending.forEach(cb => cb());
+};
+
 function makeButton(sourceIndicator) {
     const context = vm.createContext({
         Main: { panel: { statusArea: { widget: sourceIndicator } } },
@@ -46,15 +55,23 @@ function makeButton(sourceIndicator) {
         Clutter: { Clone: ClutterClone },
         GObject: { signal_lookup: () => 1 },
         sourceIsVisible: actor => actor?.visible ?? false,
+        Meta: { LaterType: { BEFORE_REDRAW: 0 } },
+        GLib: { SOURCE_REMOVE: false },
+        global: { compositor: { get_laters: () => ({
+            add: (_type, cb) => { laters.set(++nextLaterId, cb); return nextLaterId; },
+            remove: id => laters.delete(id),
+        }) } },
         console,
     });
     const methods = vm.runInContext(`({${parts}})`, context);
     const button = Object.assign(Object.create(methods), {
-        _destroyed: false, visible: true, clonesBuilt: 0,
+        _destroyed: false, visible: true, clonesBuilt: 0, refreshes: 0,
+        _panel: { _schedulePanelRefresh() { button.refreshes++; } },
         _createIndicatorClone() { this.clonesBuilt++; },
         destroy() { this._destroyed = true; },
     });
     button._initGenericIndicator('widget');
+    flush();
     return button;
 }
 
@@ -71,6 +88,7 @@ function makeButton(sourceIndicator) {
     // The indicator populates and the shell notifies.
     child.children.push(new StIcon({ icon_name: 'weather-clear-symbolic' }));
     src.emit('notify::allocation');
+    flush();
 
     assert.equal(button._isEmpty, false, 'must revive once the source has content');
     assert.equal(button.visible, true, 'must become visible');
@@ -86,6 +104,7 @@ function makeButton(sourceIndicator) {
 
     src.children.push(new StLabel({ text: '21°C' }));
     src.emit('notify::allocation');
+    flush();
     assert.equal(button._isEmpty, false, 'must revive when a child appears');
     assert.equal(button.clonesBuilt, 1);
 }
@@ -98,6 +117,7 @@ function makeButton(sourceIndicator) {
 
     src.visible = true;
     src.emit('notify::visible');
+    flush();
     assert.equal(button._isEmpty, false, 'must revive when the source is shown');
     assert.equal(button.clonesBuilt, 1);
 }
@@ -108,6 +128,7 @@ function makeButton(sourceIndicator) {
     const button = makeButton(src);
     assert.equal(button.clonesBuilt, 1);
     for (let i = 0; i < 5; i++) src.emit('notify::allocation');
+    flush();
     assert.equal(button.clonesBuilt, 1, 'the clone must not be rebuilt on every sync');
 }
 
@@ -123,6 +144,31 @@ function makeButton(sourceIndicator) {
     assert.equal(button._isEmpty, true, 'empties out when content goes away');
     assert.equal(button.visible, false);
     assert.equal(button._destroyed, false, 'but the mirror itself survives');
+}
+
+// 6. A swapped first child after the clone is built asks the panel to
+// rebuild the mirror, once; a swap while the build is pending does not.
+{
+    const src = new Actor({ children: [new StIcon({ icon_name: 'x' })] });
+    const button = makeButton(src);
+    assert.equal(button.clonesBuilt, 1);
+
+    src.children = [new StIcon({ icon_name: 'y' })];
+    src.emit('notify::allocation');
+    src.emit('notify::allocation');
+    assert.equal(button._sourceChildSwapped, true, 'a swapped child marks the mirror stale');
+    assert.equal(button.refreshes, 1, 'and schedules one panel refresh');
+}
+{
+    const src = new Actor({ children: [] });
+    const button = makeButton(src);
+    src.children.push(new StIcon({ icon_name: 'x' }));
+    src.emit('notify::allocation');
+    src.children = [new StIcon({ icon_name: 'y' })];
+    src.emit('notify::allocation');
+    flush();
+    assert.equal(button.clonesBuilt, 1);
+    assert.equal(button.refreshes, 0, 'a pending build picks up the new child itself');
 }
 
 console.log('mirror-late-content: all assertions passed');

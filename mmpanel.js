@@ -1561,7 +1561,14 @@ const MultiMonitorsPanel = GObject.registerClass(
                     role !== 'activities' &&
                     indicator._sourceIndicator !== mainIndicator) {
                     this._destroyIndicator(role);
+                    continue;
                 }
+
+                // The source swapped in a new first child after the clone was
+                // built; _updateBox recreates the mirror from the new one.
+                if (indicator instanceof MirroredIndicatorButton &&
+                    indicator._sourceChildSwapped)
+                    this._destroyIndicator(role);
             }
         }
 
