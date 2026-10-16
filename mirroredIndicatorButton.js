@@ -50,6 +50,10 @@ function giconIdentity(gicon) {
 // A clone build that keeps throwing would otherwise be retried on every
 // source notify::allocation for the rest of the session.
 const MAX_CLONE_BUILD_FAILURES = 3;
+// After giving up, try again later -- a source can be broken for a moment
+// and then fine on the same child -- backing off to the cap.
+const CLONE_RETRY_FIRST_S = 30;
+const CLONE_RETRY_MAX_S = 600;
 
 const MMWorkspacePreviewLayout = GObject.registerClass(
     class MMWorkspacePreviewLayout extends Clutter.LayoutManager {
@@ -374,6 +378,7 @@ export const MirroredIndicatorButton = GObject.registerClass(
                         try {
                             this._createIndicatorClone();
                             this._cloneBuildFailures = 0;
+                            this._cloneRetryDelay = null;
                         } catch (e) {
                             this._releaseCloneResources();
                             for (const child of this.get_children()) {
@@ -389,9 +394,10 @@ export const MirroredIndicatorButton = GObject.registerClass(
                             if (this._cloneBuildFailures === 1) {
                                 console.warn(`[MultiMonitors] Mirroring ${this._role} failed, will retry: ${e}`);
                             } else if (this._cloneBuildFailures >= MAX_CLONE_BUILD_FAILURES) {
-                                console.warn(`[MultiMonitors] Mirroring ${this._role} failed ${this._cloneBuildFailures} times, giving up: ${e}`);
+                                console.warn(`[MultiMonitors] Mirroring ${this._role} failed ${this._cloneBuildFailures} times, giving up for now: ${e}`);
                                 // Hide the blank button instead of leaving it up.
                                 this._syncMirrorPresence();
+                                this._scheduleCloneRetry();
                             }
                         }
                         return GLib.SOURCE_REMOVE;
@@ -3406,7 +3412,26 @@ export const MirroredIndicatorButton = GObject.registerClass(
             this._workspacePreviewButtons = null;
         }
 
+        _scheduleCloneRetry() {
+            if (this._cloneRetryId)
+                return;
+            const delay = this._cloneRetryDelay ?? CLONE_RETRY_FIRST_S;
+            this._cloneRetryDelay = Math.min(delay * 2, CLONE_RETRY_MAX_S);
+            this._cloneRetryId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, delay, () => {
+                this._cloneRetryId = 0;
+                if (!this._sourceIndicator)
+                    return GLib.SOURCE_REMOVE;
+                this._cloneBuildFailures = 0;
+                this._syncMirrorPresence();
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+
         _cleanup() {
+            if (this._cloneRetryId) {
+                GLib.source_remove(this._cloneRetryId);
+                this._cloneRetryId = 0;
+            }
             if (this._cloneBuildLaterId) {
                 global.compositor.get_laters().remove(this._cloneBuildLaterId);
                 this._cloneBuildLaterId = 0;
