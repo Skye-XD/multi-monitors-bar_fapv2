@@ -348,8 +348,23 @@ export const MirroredIndicatorButton = GObject.registerClass(
                 this._cloneBuildLaterId = global.compositor.get_laters().add(
                     Meta.LaterType.BEFORE_REDRAW, () => {
                         this._cloneBuildLaterId = 0;
-                        if (!this._destroyed && this._sourceIndicator)
+                        if (this._destroyed || !this._sourceIndicator)
+                            return GLib.SOURCE_REMOVE;
+                        // A build that throws must not leave _cloneBuilt set,
+                        // or the mirror stays blank for the whole session.
+                        // Drop whatever it added so the retry, on the next
+                        // sync with content, starts from the same state.
+                        const before = new Set(this.get_children());
+                        try {
                             this._createIndicatorClone();
+                        } catch (e) {
+                            console.warn(`[MultiMonitors] Mirroring ${this._role} failed, will retry: ${e}`);
+                            for (const child of this.get_children()) {
+                                if (!before.has(child))
+                                    child.destroy();
+                            }
+                            this._cloneBuilt = false;
+                        }
                         return GLib.SOURCE_REMOVE;
                     });
             }

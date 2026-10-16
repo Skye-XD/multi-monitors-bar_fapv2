@@ -67,6 +67,9 @@ function makeButton(sourceIndicator) {
     const button = Object.assign(Object.create(methods), {
         _destroyed: false, visible: true, clonesBuilt: 0, refreshes: 0,
         _panel: { _schedulePanelRefresh() { button.refreshes++; } },
+        children: [],
+        get_children() { return this.children.slice(); },
+        add_child(actor) { this.children.push(actor); },
         _createIndicatorClone() { this.clonesBuilt++; },
         destroy() { this._destroyed = true; },
     });
@@ -169,6 +172,35 @@ function makeButton(sourceIndicator) {
     flush();
     assert.equal(button.clonesBuilt, 1);
     assert.equal(button.refreshes, 0, 'a pending build picks up the new child itself');
+}
+
+// 7. A build that throws is undone and retried on the next sync.
+{
+    const src = new Actor({ children: [] });
+    const button = makeButton(src);
+    let failures = 1;
+    const partial = new Actor();
+    partial.destroy = () => { partial.destroyed = true; };
+    button._createIndicatorClone = function () {
+        if (failures-- > 0) {
+            this.add_child(partial);
+            throw new Error('source not ready');
+        }
+        this.clonesBuilt++;
+    };
+    const warn = console.warn;
+    console.warn = () => {};
+    src.children.push(new StIcon({ icon_name: 'x' }));
+    src.emit('notify::allocation');
+    flush();
+    console.warn = warn;
+    assert.equal(button.clonesBuilt, 0, 'the failed build built nothing');
+    assert.equal(partial.destroyed, true, 'what the failed build added is dropped');
+    assert.equal(button._cloneBuilt, false, 'a failed build stays retryable');
+
+    src.emit('notify::allocation');
+    flush();
+    assert.equal(button.clonesBuilt, 1, 'the next sync builds it');
 }
 
 console.log('mirror-late-content: all assertions passed');
