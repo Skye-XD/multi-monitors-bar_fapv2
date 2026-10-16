@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../mirroredIndicatorButton.js', import.meta.url), 'utf8');
+const MAX_CLONE_BUILD_FAILURES = Number(source.match(/const MAX_CLONE_BUILD_FAILURES = (\d+);/)[1]);
 
 function method(signature, optional = false) {
     const start = source.indexOf(`        ${signature}`);
@@ -57,6 +58,7 @@ function makeButton(sourceIndicator) {
         sourceIsVisible: actor => actor?.visible ?? false,
         Meta: { LaterType: { BEFORE_REDRAW: 0 } },
         GLib: { SOURCE_REMOVE: false },
+        MAX_CLONE_BUILD_FAILURES,
         global: { compositor: { get_laters: () => ({
             add: (_type, cb) => { laters.set(++nextLaterId, cb); return nextLaterId; },
             remove: id => laters.delete(id),
@@ -71,6 +73,13 @@ function makeButton(sourceIndicator) {
         get_children() { return this.children.slice(); },
         add_child(actor) { this.children.push(actor); },
         _createIndicatorClone() { this.clonesBuilt++; },
+        releases: 0,
+        _releaseCloneResources() { this.releases++; },
+        styleClass: 'panel-button', style: null,
+        get_style_class_name() { return this.styleClass; },
+        set_style_class_name(name) { this.styleClass = name; },
+        get_style() { return this.style; },
+        set_style(style) { this.style = style; },
         destroy() { this._destroyed = true; },
     });
     button._initGenericIndicator('widget');
@@ -197,10 +206,57 @@ function makeButton(sourceIndicator) {
     assert.equal(button.clonesBuilt, 0, 'the failed build built nothing');
     assert.equal(partial.destroyed, true, 'what the failed build added is dropped');
     assert.equal(button._cloneBuilt, false, 'a failed build stays retryable');
+    assert.equal(button.releases, 1, 'bindings and handlers from the failed build are released');
 
     src.emit('notify::allocation');
     flush();
     assert.equal(button.clonesBuilt, 1, 'the next sync builds it');
+}
+
+// 8. A build that keeps throwing gives up after a few tries, logs once
+// per outcome, and hides rather than leaving a blank button.
+{
+    const src = new Actor({ children: [] });
+    const button = makeButton(src);
+    let attempts = 0;
+    button._createIndicatorClone = function () {
+        attempts++;
+        this.styleClass = 'mm-quick-settings';
+        throw new Error('always broken');
+    };
+    const warn = console.warn;
+    let warnings = 0;
+    console.warn = () => warnings++;
+    src.children.push(new StIcon({ icon_name: 'x' }));
+    for (let i = 0; i < 10; i++) {
+        src.emit('notify::allocation');
+        flush();
+    }
+    console.warn = warn;
+    assert.equal(attempts, MAX_CLONE_BUILD_FAILURES, 'retries stop after the failure limit');
+    assert.equal(warnings, 2, 'first failure and giving up are logged, nothing in between');
+    assert.equal(button.styleClass, 'panel-button', 'style classes from the failed build are rolled back');
+    assert.equal(button.visible, false, 'a mirror that gave up is hidden');
+}
+
+// 9. A source hidden through its container (GNOME's convention) is not
+// mirrored, and the mirror follows the container being shown again.
+{
+    const container = new Actor({ visible: false });
+    const src = new Actor({ container, children: [new StIcon({ icon_name: 'x' })] });
+    const button = makeButton(src);
+    assert.equal(button.visible, false, 'hidden container hides the mirror');
+    assert.ok(container.handlers.some(h => h.signal === 'notify::visible'), 'the container is watched');
+
+    container.visible = true;
+    container.emit('notify::visible');
+    flush();
+    assert.equal(button.visible, true, 'shown container shows the mirror');
+    assert.equal(button.clonesBuilt, 1);
+
+    container.visible = false;
+    container.emit('notify::visible');
+    assert.equal(button.visible, false, 'hiding the container again hides the mirror');
 }
 
 console.log('mirror-late-content: all assertions passed');
