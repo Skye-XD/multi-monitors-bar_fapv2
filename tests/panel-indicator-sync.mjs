@@ -82,7 +82,6 @@ function buildPanel(spec) {
 function makeMirror(mainPanel, settings = {}) {
     const context = vm.createContext({
         Main: { panel: mainPanel, layoutManager: { primaryIndex: 0 } },
-        cleanupSafely: fn => fn(),
         SHOW_ACTIVITIES_ID: 'show-activities',
         SHOW_APP_INDICATORS_ID: 'show-app-indicators',
         SHOW_DATE_TIME_ID: 'show-date-time',

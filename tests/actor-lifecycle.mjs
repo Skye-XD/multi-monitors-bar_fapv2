@@ -3,8 +3,10 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const removed = [];
+const removedLaters = [];
 const context = vm.createContext({
     GLib: { source_remove: id => removed.push(id) },
+    global: { compositor: { get_laters: () => ({ remove: id => removedLaters.push(id) }) } },
     Main: { ctrlAltTabManager: { removeGroup() {} } },
 });
 function methods(file, className, names) {
@@ -26,7 +28,7 @@ const live = {
     get_first_child() { assert.fail('cleanup must not traverse source children'); },
 };
 const mirror = methods('mirroredIndicatorButton.js', 'MirroredIndicatorButton', [
-    '_cleanup', '_disconnectMirroredClockDisplay', '_disconnectLabelCopyBindings',
+    '_cleanup', '_releaseCloneResources', '_disconnectMirroredClockDisplay', '_disconnectLabelCopyBindings',
     '_disconnectIconSyncSource', '_disconnectWorkspaceWindowSignals',
 ]);
 Object.assign(mirror, {
@@ -36,6 +38,8 @@ Object.assign(mirror, {
     _allocationCloneSignals: [{ source: live, id: 12 }],
     _workspacePreviewWindowSignalIds: [{ object: live, id: 13 }],
     _forwardClickTimeoutId: 14, _allocationCloneTimeouts: [15],
+    // Destroyed while the lazy clone build is still queued.
+    _cloneBuildLaterId: 20,
     _genericMenuPendingRestore() { released.push('restore'); },
 });
 mirror._cleanup();
@@ -44,8 +48,10 @@ assert.equal(mirror._sourcePresenceChild, null);
 assert.equal(mirror._quickSettingsSource, null);
 assert.equal(mirror._genericMenuPendingRestore, null);
 assert.deepEqual(removed, [14, 15]);
+assert.deepEqual(removedLaters, [20]);
 mirror._cleanup();
 assert.deepEqual(removed, [14, 15], 'cleanup must be idempotent');
+assert.deepEqual(removedLaters, [20], 'cleanup must be idempotent');
 
 const panel = methods('mmpanel.js', 'MultiMonitorsPanel', [
     '_cleanup', '_schedulePanelRefresh', '_disconnectIndicatorSignals', '_destroyIndicator',
