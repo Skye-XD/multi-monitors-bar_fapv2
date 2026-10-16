@@ -329,6 +329,9 @@ export const MirroredIndicatorButton = GObject.registerClass(
             const sourceChild = this._sourceIndicator.get_first_child();
             if (sourceChild && sourceChild !== this._sourcePresenceChild) {
                 this._watchSourceChild(sourceChild);
+                // A new child is a fresh start: builds that failed on the old
+                // one must not keep the mirror hidden for the session.
+                this._cloneBuildFailures = 0;
                 // The clone was built from the child just replaced, so it now
                 // shows a stale or destroyed actor. Tearing a built clone down
                 // in place would duplicate _cleanup(); have the panel rebuild
@@ -370,6 +373,7 @@ export const MirroredIndicatorButton = GObject.registerClass(
                         const { y_expand: yExpand, y_align: yAlign } = this;
                         try {
                             this._createIndicatorClone();
+                            this._cloneBuildFailures = 0;
                         } catch (e) {
                             this._releaseCloneResources();
                             for (const child of this.get_children()) {
