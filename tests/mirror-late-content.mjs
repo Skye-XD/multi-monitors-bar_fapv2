@@ -4,6 +4,8 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../mirroredIndicatorButton.js', import.meta.url), 'utf8');
 const MAX_CLONE_BUILD_FAILURES = Number(source.match(/const MAX_CLONE_BUILD_FAILURES = (\d+);/)[1]);
+const CLONE_RETRY_FIRST_S = Number(source.match(/const CLONE_RETRY_FIRST_S = (\d+);/)[1]);
+const CLONE_RETRY_MAX_S = Number(source.match(/const CLONE_RETRY_MAX_S = (\d+);/)[1]);
 
 function method(signature, optional = false) {
     const start = source.indexOf(`        ${signature}`);
@@ -21,6 +23,7 @@ const parts = [
     method('_syncMirrorPresence() {'),
     method('_isBlankContainer(actor) {', true),
     method('_hasVisibleRenderableSourceContent(actor) {'),
+    method('_scheduleCloneRetry() {'),
 ].filter(Boolean).join(',\n');
 
 // Minimal actor stubs. connectObject records handlers so the test can fire them
@@ -42,6 +45,7 @@ class ClutterClone extends Actor { }
 
 // The clone is built from a BEFORE_REDRAW later; flush() runs pending ones.
 let laters = new Map();
+let timers = new Map();
 let nextLaterId = 0;
 const flush = () => {
     const pending = [...laters.values()];
@@ -57,7 +61,12 @@ function makeButton(sourceIndicator) {
         GObject: { signal_lookup: () => 1 },
         sourceIsVisible: actor => actor?.visible ?? false,
         Meta: { LaterType: { BEFORE_REDRAW: 0 } },
-        GLib: { SOURCE_REMOVE: false },
+        GLib: {
+            SOURCE_REMOVE: false, PRIORITY_DEFAULT: 0,
+            timeout_add_seconds: (_p, secs, cb) => { timers.set(++nextLaterId, {secs, cb}); return nextLaterId; },
+            source_remove: id => timers.delete(id),
+        },
+        CLONE_RETRY_FIRST_S, CLONE_RETRY_MAX_S,
         MAX_CLONE_BUILD_FAILURES,
         global: { compositor: { get_laters: () => ({
             add: (_type, cb) => { laters.set(++nextLaterId, cb); return nextLaterId; },
@@ -237,6 +246,19 @@ function makeButton(sourceIndicator) {
     assert.equal(warnings, 2, 'first failure and giving up are logged, nothing in between');
     assert.equal(button.styleClass, 'panel-button', 'style classes from the failed build are rolled back');
     assert.equal(button.visible, false, 'a mirror that gave up is hidden');
+
+    // ... but tries again later: the source may have been broken for a
+    // moment only, on the same child.
+    const retries = [...timers.values()];
+    assert.equal(retries.length, 1, 'one retry is scheduled after giving up');
+    assert.equal(retries[0].secs, CLONE_RETRY_FIRST_S, 'first retry after CLONE_RETRY_FIRST_S');
+    timers = new Map();
+    button._createIndicatorClone = function () { attempts++; };
+    retries[0].cb();
+    flush();
+    assert.equal(attempts, MAX_CLONE_BUILD_FAILURES + 1, 'the retry builds again');
+    assert.equal(button.visible, true, 'and the mirror comes back');
+    assert.equal(button._cloneRetryDelay, null, 'a successful build resets the backoff');
 }
 
 // 9. A source hidden through its container (GNOME's convention) is not
