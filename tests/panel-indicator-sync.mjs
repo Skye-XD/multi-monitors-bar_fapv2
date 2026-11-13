@@ -18,7 +18,7 @@ const updateBoxSrc = method('_updateBox', '_updateBox(elements, box) {');
 // The center-box bug lived inside _addToPanelBox, so run the real one.
 const addToBoxSrc = method('_addToPanelBox', '_addToPanelBox(role, indicator, position, box) {');
 const centerRankSrc = method('_getMainCenterRank', '_getMainCenterRank(role) {');
-const centerIndexSrc = method('_getCenterInsertIndex', '_getCenterInsertIndex(role, position) {');
+const centerIndexSrc = method('_getCenterInsertIndex', '_getCenterInsertIndex(role, position, exclude = null) {');
 // Prototype helper, declared at top level rather than inside the class body.
 const ensureQsStart = source.indexOf('MultiMonitorsPanel.prototype._ensureQuickSettingsRightmost');
 assert.ok(ensureQsStart > 0, 'could not locate _ensureQuickSettingsRightmost');
@@ -54,7 +54,7 @@ function makeIndicator(role, visible = true) {
     // container reports the same state the box scan reads.
     const container = {
         role, parent: null, visible,
-        show() { }, get_parent() { return this.parent; },
+        show() { }, hide() { }, get_parent() { return this.parent; },
         contains: () => false,
     };
     return {
