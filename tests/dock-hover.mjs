@@ -151,13 +151,25 @@ const Main = {
     }),
 };
 const display = new Signals();
+const liveIsolations = new Set();
 const source = readFileSync(new URL('../mmdock.js', import.meta.url), 'utf8');
 const context = vm.createContext({
     St: {Bin: Actor, Widget: Actor}, GLib, Main,
     Clutter: {ActorAlign: {CENTER: 1, END: 2}, EVENT_PROPAGATE: false,
         AnimationMode: {EASE_OUT_CUBIC: 1, EASE_IN_OUT_CUBIC: 2}},
     DashModule: {Dash}, OverviewControls: {},
-    global: {display, get_pointer: () => pointer, stage: {get_key_focus: () => focus}},
+    // Per-monitor isolation has no hover side effects; only lifecycle matters.
+    DashIsolation: {DashMonitorIsolation: class {
+        constructor(dash) { liveIsolations.add(this); this.dash = dash; }
+        destroy() { assert.ok(liveIsolations.delete(this)); }
+    }},
+    Meta: {LaterType: {BEFORE_REDRAW: 0}},
+    global: {display, get_pointer: () => pointer, stage: {get_key_focus: () => focus},
+        // Laters run before the next frame; model them as immediate sources.
+        compositor: {get_laters: () => ({
+            add: (_type, callback) => GLib.timeout_add(0, 0, callback),
+            remove: id => GLib.source_remove(id),
+        })}},
 });
 const Dock = vm.runInContext(source.replace(/^import .*;\n/gm, '')
     .replace('export class MultiMonitorsDock', 'class MultiMonitorsDock') +
@@ -376,4 +388,5 @@ extension._relayout();
 assert.equal(extension._primaryDock, null);
 assert.equal(sources.size, 0);
 assert.equal(tracked.size, 0);
+assert.equal(liveIsolations.size, 0, 'Every dock releases its monitor isolation');
 console.log('Dock hover lifecycle tests passed');

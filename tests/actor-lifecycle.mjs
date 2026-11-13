@@ -31,9 +31,11 @@ const mirror = methods('mirroredIndicatorButton.js', 'MirroredIndicatorButton', 
     '_cleanup', '_releaseCloneResources', '_disconnectMirroredClockDisplay', '_disconnectLabelCopyBindings',
     '_disconnectIconSyncSource', '_disconnectWorkspaceWindowSignals',
 ]);
+const sourceOwners = [];
+const sourceIndicator = { ...live, disconnectObject(owner) { sourceOwners.push(owner); } };
 Object.assign(mirror, {
-    _sourceIndicator: live, _sourcePresenceChild: live,
-    _sourceDestroyId: 10, _clockBinding: live, _labelCopyBindings: [live],
+    _sourceIndicator: sourceIndicator, _sourcePresenceChild: live,
+    _clockBinding: live, _labelCopyBindings: [live],
     _quickSettingsSource: live, _sourceSizeChangedId: 11,
     _allocationCloneSignals: [{ source: live, id: 12 }],
     _workspacePreviewWindowSignalIds: [{ object: live, id: 13 }],
@@ -43,6 +45,7 @@ Object.assign(mirror, {
     _genericMenuPendingRestore() { released.push('restore'); },
 });
 mirror._cleanup();
+assert.deepEqual(sourceOwners, [mirror], 'source handlers (incl. destroy) released via disconnectObject');
 assert.equal(mirror._sourceIndicator, null);
 assert.equal(mirror._sourcePresenceChild, null);
 assert.equal(mirror._quickSettingsSource, null);
@@ -73,8 +76,19 @@ panel.statusArea.tray = { ...live };
 panel._destroyIndicator('tray');
 assert.equal(panel.statusArea.tray, undefined);
 assert.ok(released.indexOf(18) < released.indexOf('destroy'), 'disconnect before destroying owned indicator');
-assert.ok(released.includes(10));
 assert.ok(released.includes(12));
+
+// The button's cleanup must hang off its destroy signal, not a destroy()
+// override: Clutter destroys children of a torn-down panel without calling
+// the JS override, which left the source 'destroy' handler pointing at a
+// disposed button (journal log on issue #59).
+{
+    const source = readFileSync(new URL('../mirroredIndicatorButton.js', import.meta.url), 'utf8');
+    const body = source.slice(source.indexOf('class MirroredIndicatorButton'));
+    assert.ok(!/\n {8}destroy\(\) \{/.test(body), 'no destroy() override on MirroredIndicatorButton');
+    assert.ok(body.includes("this.connect('destroy', () => this._cleanup())"));
+    assert.ok(!body.includes('_sourceDestroyId'), 'source destroy handler uses connectObject');
+}
 // Issue #40: repeated refreshes must destroy every retired copy while JS can
 // still run its destroy handlers, and release bindings before destruction.
 class Label {
@@ -122,6 +136,154 @@ for (let i = 0; i < 20; i++) {
 refresh._disconnectLabelCopyBindings();
 container.destroy_all_children();
 console.log('Actor lifecycle regression checks passed (including 20 label refreshes)');
+
+// Issue #60: static icon copies are built inside MirroredIndicatorButton._init
+// before the button is added to a panel box on the stage. Measuring preferred
+// size while off-stage triggers "st_widget_get_theme_node called on the widget
+// [...] which is not in the stage". Defer measurement until mapped on stage.
+const staticSize = methods('mirroredIndicatorButton.js', 'MirroredIndicatorButton', [
+    '_syncStaticCopyContainerSize', '_getActorAllocationSize',
+]);
+let onStage = false;
+let mappedHandler = null;
+let allocHandler = null;
+const sizedContainer = {
+    mapped: false,
+    size: null,
+    get_stage() { return onStage ? {} : null; },
+    get_preferred_width() {
+        assert.ok(onStage, 'must not measure preferred width while off-stage');
+        return [20, 24];
+    },
+    get_preferred_height() {
+        assert.ok(onStage, 'must not measure preferred height while off-stage');
+        return [18, 20];
+    },
+    set_size(w, h) { this.size = [w, h]; },
+    connectObject(sig, cb, owner) {
+        assert.equal(owner, staticSize, 'mapped handler must be owned by the button');
+        if (sig === 'notify::mapped')
+            mappedHandler = cb;
+    },
+    disconnectObject(owner) {
+        assert.equal(owner, staticSize);
+        mappedHandler = null;
+    },
+};
+const iconSource = new context.St.Icon();
+iconSource.connect = (_sig, cb) => { allocHandler = cb; return 42; };
+staticSize._isClipboardIndicator = () => false;
+staticSize._allocationCloneSignals = [];
+// Icon-only copies (Tiling Shell) and Clipboard Indicator copies keep their
+// natural size: a frozen size squeezed the icon to zero width on side bars.
+onStage = true;
+staticSize._syncStaticCopyContainerSize(sizedContainer, iconSource);
+assert.equal(sizedContainer.size, null, 'icon-only copy is never given a fixed size');
+assert.equal(mappedHandler, null, 'icon-only copy does not wait for a map');
+assert.equal(allocHandler, null, 'icon-only copy does not follow the source allocation');
+staticSize._isClipboardIndicator = () => true;
+staticSize._syncStaticCopyContainerSize(sizedContainer, new context.St.BoxLayout());
+assert.equal(sizedContainer.size, null, 'clipboard copy is never given a fixed size');
+staticSize._isClipboardIndicator = () => false;
+
+// Container sources still mirror the source allocation, once on stage.
+onStage = false;
+const boxSource = new context.St.BoxLayout();
+boxSource.get_stage = () => ({});
+boxSource.get_allocation_box = () => ({ get_width: () => 24, get_height: () => 20 });
+boxSource.connect = (_sig, cb) => { allocHandler = cb; return 43; };
+boxSource.mapped = true;
+let sourceMappedHandler = null;
+boxSource.connectObject = (sig, cb, owner) => {
+    assert.equal(owner, sizedContainer, 'source map handler goes away with the copy');
+    if (sig === 'notify::mapped')
+        sourceMappedHandler = cb;
+};
+staticSize._syncStaticCopyContainerSize(sizedContainer, boxSource);
+assert.equal(sizedContainer.size, null, 'off-stage container waits for stage attachment');
+onStage = true;
+sizedContainer.mapped = true;
+mappedHandler();
+assert.deepEqual(sizedContainer.size, [24, 20], 'size synced once mapped on stage');
+assert.equal(mappedHandler, null, 'mapped handler disconnects after the first sync');
+
+// Issue #63: an unmapped source (primary panel hidden by a fullscreen window)
+// keeps a stale allocation; after unlock it predates the labels' text. The
+// copy must size to its own content until the source is shown again.
+boxSource.mapped = false;
+sourceMappedHandler();
+assert.deepEqual(sizedContainer.size, [-1, -1], 'unmapped source releases the pinned size');
+allocHandler();
+assert.deepEqual(sizedContainer.size, [-1, -1], 'stale allocation is not pinned while unmapped');
+boxSource.mapped = true;
+sourceMappedHandler();
+assert.deepEqual(sizedContainer.size, [24, 20], 'size pinned again once the source is shown');
+
+// Issue #59: mirrored tray icons follow the source live, including while a
+// fullscreen window leaves the primary panel's AppIndicator icon unmapped.
+{
+    class Emitter {
+        handlers = [];
+        connectObject(...args) {
+            const owner = args.pop();
+            for (let i = 0; i < args.length; i += 2)
+                this.handlers.push({ signal: args[i], cb: args[i + 1], owner });
+        }
+        emit(signal) {
+            this.handlers.filter(h => h.signal === signal).forEach(h => h.cb());
+        }
+    }
+    class Icon extends Emitter {
+        constructor(props = {}) {
+            super();
+            this._gicon = null;
+            this._iconName = null;
+            Object.assign(this, props);
+        }
+        get gicon() { return this._gicon; }
+        set gicon(v) { this._gicon = v; this.emit('notify::gicon'); }
+        get icon_name() { return this._iconName; }
+        set icon_name(v) { this._iconName = v; this._gicon = null; this.emit('notify::icon-name'); }
+        get_style_class_name() { return 'system-status-icon'; }
+    }
+    context.St = { Icon, Label: class {}, BoxLayout: class {} };
+    const copier = methods('mirroredIndicatorButton.js', 'MirroredIndicatorButton', [
+        '_createDisplayWidgetCopy', '_refreshUnmappedAppIndicatorIcon',
+    ]);
+    copier._getSourceIconSize = () => 16;
+
+    const indicator = new Emitter();
+    const pixmapA = { name: 'normal' }, pixmapB = { name: 'unread' };
+    let mapped = false, updates = 0;
+    const sourceIcon = new Icon();
+    sourceIcon._gicon = pixmapA;
+    sourceIcon._indicator = indicator;
+    sourceIcon.is_mapped = () => mapped;
+    sourceIcon._updateIcon = async () => { updates++; sourceIcon.gicon = pixmapB; };
+
+    const copy = copier._createDisplayWidgetCopy(sourceIcon);
+    assert.equal(copy.gicon, pixmapA, 'copy starts with the source pixmap');
+    assert.ok(sourceIcon.handlers.every(h => h.owner === copy), 'source handlers owned by the copy');
+    assert.ok(indicator.handlers.every(h => h.owner === copy), 'indicator handlers owned by the copy');
+
+    sourceIcon.gicon = pixmapA;
+    sourceIcon.gicon = { name: 'other' };
+    assert.equal(copy.gicon.name, 'other', 'copy follows gicon swaps');
+
+    indicator.emit('icon');
+    assert.equal(updates, 1, 'unmapped source is refreshed for the mirrors');
+    assert.equal(copy.gicon, pixmapB);
+
+    mapped = true;
+    indicator.emit('overlay-icon');
+    assert.equal(updates, 1, 'a mapped source refreshes itself');
+
+    const plainIcon = new Icon();
+    plainIcon._iconName = 'audio-volume-high';
+    const plainCopy = copier._createDisplayWidgetCopy(plainIcon);
+    assert.equal(plainCopy.icon_name, 'audio-volume-high', 'themed icons copy by name');
+    console.log('Mirrored tray icon sync checks passed (live gicon + unmapped AppIndicator refresh)');
+}
 
 const dateMenu = methods('mmcalendar.js', 'MultiMonitorsDateMenuButton', [
     '_mmTrackClockConnections', '_cleanupClock',

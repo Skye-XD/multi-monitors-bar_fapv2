@@ -82,6 +82,7 @@ function makeButton(sourceIndicator) {
         get_children() { return this.children.slice(); },
         add_child(actor) { this.children.push(actor); },
         _createIndicatorClone() { this.clonesBuilt++; },
+        _loadUnmappedAppIndicatorIcons() { },
         releases: 0,
         _releaseCloneResources() { this.releases++; },
         styleClass: 'panel-button', style: null,

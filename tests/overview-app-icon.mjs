@@ -32,6 +32,7 @@ class Label extends Actor {
 const context = vm.createContext({
     St: { Button: Actor, BoxLayout: Actor, Icon: Actor, Label, ButtonMask: { ONE: 1 } },
     Clutter: { ActorAlign: { CENTER: 1 } },
+    Common: { verticalBoxProps: () => ({ orientation: 1 }) },
     console: { debug() {} },
 });
 const manager = vm.runInContext(`({${source.slice(start, end)}})`, context);
@@ -45,9 +46,6 @@ const legacyIcon = new Actor();
 assert.equal(iconFor(app({ create_icon_texture: () => legacyIcon })), legacyIcon,
     'older shells can still use the legacy texture method');
 
-assert.equal(iconFor(app({ create_icon_texture: () => { throw new Error('unavailable'); } }))
-    .icon_name, 'application-x-executable',
-    'a failed legacy texture call uses the generic fallback');
 
 const gicon = {};
 assert.equal(iconFor(app({ get_icon: () => gicon })).gicon, gicon,

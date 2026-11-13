@@ -50,6 +50,9 @@ import { setBoxVertical } from './common.js';
 
 MMCalendar.setMainRef(Main);
 
+// Line height of the stacked clock on side bars (1 = the font's own).
+const CLOCK_LINE_HEIGHT = 1.6;
+
 // St.BoxLayout replaced `vertical` with `orientation` in GNOME 48.
 function isBoxVertical(box) {
     return 'orientation' in box ? box.orientation === Clutter.Orientation.VERTICAL : box.vertical;
@@ -598,6 +601,11 @@ const MultiMonitorsPanel = GObject.registerClass(
                     'notify::visible', scheduleUpdate,
                     'destroy', () => watched.delete(actor),
                     this);
+                // Mirrors of sources without an icon yet are dropped as empty;
+                // rebuild once the icon arrives (AppIndicator loads it late
+                // on a hidden panel, issue #63).
+                if (actor instanceof St.Icon)
+                    actor.connectObject('notify::gicon', scheduleUpdate, this);
                 for (const signal of ['child-added', 'actor-added']) {
                     if (GObject.signal_lookup(signal, actor.constructor.$gtype))
                         actor.connectObject(signal, (_actor, child) => {
@@ -775,7 +783,7 @@ const MultiMonitorsPanel = GObject.registerClass(
         }
 
         _monitorKey() {
-            return monitorKey(global.display, this.monitorIndex, Main.layoutManager.primaryIndex);
+            return monitorKey(this.monitorIndex,Main.layoutManager.primaryIndex);
         }
 
         _applyPanelLayout() {
@@ -788,8 +796,14 @@ const MultiMonitorsPanel = GObject.registerClass(
                 this._vertical = vertical;
                 for (const box of [this._leftBox, this._centerBox, this._centerBin, this._rightBox])
                     setBoxVertical(box, vertical);
+                this._leftBox.x_align = vertical ? Clutter.ActorAlign.FILL : Clutter.ActorAlign.START;
+                this._leftBox.y_align = vertical ? Clutter.ActorAlign.START : Clutter.ActorAlign.FILL;
+                this._centerBox.x_align = vertical ? Clutter.ActorAlign.FILL : Clutter.ActorAlign.CENTER;
+                this._centerBox.y_align = vertical ? Clutter.ActorAlign.CENTER : Clutter.ActorAlign.FILL;
                 this._centerBin.x_align = vertical ? Clutter.ActorAlign.FILL : Clutter.ActorAlign.CENTER;
                 this._centerBin.y_align = vertical ? Clutter.ActorAlign.CENTER : Clutter.ActorAlign.FILL;
+                this._rightBox.x_align = vertical ? Clutter.ActorAlign.FILL : Clutter.ActorAlign.END;
+                this._rightBox.y_align = vertical ? Clutter.ActorAlign.END : Clutter.ActorAlign.FILL;
                 if (vertical)
                     this.add_style_class_name('multimonitor-panel-vertical');
                 else
@@ -822,7 +836,8 @@ const MultiMonitorsPanel = GObject.registerClass(
         }
 
         _syncItemOrientation(actor, vertical) {
-            actor._syncPanelOrientation?.(vertical);
+            if (actor instanceof MirroredIndicatorButton)
+                actor._syncPanelOrientation(vertical);
             if (actor instanceof St.BoxLayout) {
                 if (vertical && !isBoxVertical(actor)) {
                     setBoxVertical(actor, true);
@@ -858,6 +873,9 @@ const MultiMonitorsPanel = GObject.registerClass(
                 this._clockVerticalText = null;
                 clutterText?.connectObject(
                     'notify::text', () => this._formatClock(),
+                    // St swaps the attribute list whenever it restyles the
+                    // label (hover, theme, scale), dropping the line height.
+                    'notify::attributes', () => this._syncClockLineHeight(),
                     'destroy', () => {
                         this._clockText = null;
                     },
@@ -878,6 +896,9 @@ const MultiMonitorsPanel = GObject.registerClass(
                     this);
             }
             clutterText.line_alignment = Pango.Alignment.CENTER;
+            // Unwrapped text sits at the left of a label wider than it is,
+            // so on a side bar shrink the label to its text and center that.
+            label.x_align = this._vertical ? Clutter.ActorAlign.CENTER : Clutter.ActorAlign.FILL;
             this._formatClock();
         }
 
@@ -890,7 +911,7 @@ const MultiMonitorsPanel = GObject.registerClass(
             if (!clutterText || !Pango.attr_line_height_new)
                 return;
             // GJS can't read an attribute's type, so match ours by value.
-            const lineHeight = Pango.attr_line_height_new(1.35);
+            const lineHeight = Pango.attr_line_height_new(CLOCK_LINE_HEIGHT);
             const attrs = clutterText.attributes?.copy() ?? new Pango.AttrList();
             const removed = attrs.filter(attr => attr.equal(lineHeight));
             if (!!removed === !!this._vertical)
@@ -1043,12 +1064,14 @@ const MultiMonitorsPanel = GObject.registerClass(
             this._centerBox.clip_to_allocation = true;
         }
 
-        _hideIndicators() {
+        _hideIndicators(keep = null) {
             for (let role in this.statusArea) {
                 let indicator = this.statusArea[role];
                 if (!indicator)
                     continue;
                 const container = indicator.container || indicator;
+                if (keep?.has(container))
+                    continue;
                 if (container?.hide)
                     container.hide();
             }
@@ -1083,7 +1106,7 @@ const MultiMonitorsPanel = GObject.registerClass(
 
         _roleIsEnabled(role, fallback = true) {
             return indicatorIsEnabled(this._settings,
-                monitorKey(global.display, this.monitorIndex, Main.layoutManager.primaryIndex),
+                monitorKey(this.monitorIndex,Main.layoutManager.primaryIndex),
                 role, fallback);
         }
 
@@ -1096,7 +1119,11 @@ const MultiMonitorsPanel = GObject.registerClass(
 
             let indicator = this.statusArea[role];
             if (indicator) {
-                indicator.container.show();
+                // An empty mirror stays hidden (see _addToPanelBox).
+                if (!indicator._isEmpty) {
+                    indicator.container.show();
+                    this._shownInRefresh?.add(indicator.container);
+                }
                 // CRITICAL FIX: Return the existing indicator instead of null!
                 return indicator;
             }
@@ -1294,10 +1321,10 @@ const MultiMonitorsPanel = GObject.registerClass(
                 child === mainContainer || (child.contains && child.contains(mainContainer)));
         }
 
-        _getCenterInsertIndex(role, position) {
+        _getCenterInsertIndex(role, position, exclude = null) {
             // Keep center items in the main panel's center order. The dateMenu
             // is placed separately, so list positions alone are not enough.
-            const children = this._centerBin.get_children();
+            const children = this._centerBin.get_children().filter(child => child !== exclude);
             const rank = this._getMainCenterRank(role);
             if (rank < 0)
                 return Math.max(0, Math.min(position, children.length));
@@ -1352,16 +1379,45 @@ const MultiMonitorsPanel = GObject.registerClass(
                 });
             }
 
-            // Critical: Remove from existing parent BEFORE adding (like main Panel)
+            // An empty mirror keeps its slot but stays hidden: the refresh's
+            // _hideIndicators() hides whatever it did not show, and the
+            // button's own visibility, bound onto its container, brings it
+            // back when content arrives.
+            const showPlaced = () => {
+                if (indicator._isEmpty)
+                    return;
+                container.show();
+                this._shownInRefresh?.add(container);
+            };
+
+            // Moving an item resets its hover state and closes its menu, so
+            // leave it alone when it is already where it belongs.
+            const centered = box === this._centerBox && !!this._centerBin;
+            const target = centered ? this._centerBin : box;
             const parent = container.get_parent();
+            if (parent === target) {
+                const index = centered
+                    ? this._getCenterInsertIndex(role, position, container)
+                    : Math.max(0, Math.min(position, target.get_n_children() - 1));
+                if (target.get_children().indexOf(container) === index) {
+                    showPlaced();
+                    if (indicator.menu)
+                        this.menuManager.addMenu(indicator.menu);
+                    if (role === 'dateMenu')
+                        this._syncClockLayout();
+                    return;
+                }
+            }
+
+            // Critical: Remove from existing parent BEFORE adding (like main Panel)
             if (parent)
                 parent.remove_child(container);
 
             // Show container BEFORE adding (like main Panel)
-            container.show();
+            showPlaced();
 
             // If targeting center box, place the item in the center wrapper and center it
-            if (box === this._centerBox && this._centerBin) {
+            if (centered) {
                 // Every center indicator lives in the bin, at its primary-panel
                 // index. Clearing the bin per insert left only the last one.
                 container.x_align = Clutter.ActorAlign.CENTER;
@@ -1392,14 +1448,21 @@ const MultiMonitorsPanel = GObject.registerClass(
         _updatePanel() {
             if (!this._settings)
                 return;
-            this._hideIndicators();
+            // Hide only what this refresh does not show again. Hiding everything
+            // first made every item flicker and closed its open menu.
+            const shown = new Set();
+            this._shownInRefresh = shown;
+            try {
+                // Clone ALL indicators from main panel instead of just the default ones
+                this._cloneAllMainPanelIndicators();
 
-            // Clone ALL indicators from main panel instead of just the default ones
-            this._cloneAllMainPanelIndicators();
 
-
-            // Ensure system tray is rightmost
-            this._ensureQuickSettingsRightmost();
+                // Ensure system tray is rightmost
+                this._ensureQuickSettingsRightmost();
+            } finally {
+                this._shownInRefresh = null;
+            }
+            this._hideIndicators(shown);
 
         }
 
@@ -1577,17 +1640,24 @@ const MultiMonitorsPanel = GObject.registerClass(
                 return;
             }
 
-            // Target index inside the box, advanced only for indicators we
-            // actually place, so skipped roles leave no gap. Each placement
-            // re-inserts at this index, which converges on the primary panel's
-            // order regardless of what the box held before.
-            let position = 0;
+            const isPrimary = this.monitorIndex === Main.layoutManager.primaryIndex;
+            const seen = new Set();
+            let nChildren = box.get_n_children();
+            // Left/right boxes: keep each item after the previous one and only
+            // move items that are out of order. Moving an item resets its hover
+            // state (flicker) and closes its menu, and refreshes run often.
+            let previous = null;
 
             for (let i = 0; i < elements.length; i++) {
                 let role = elements[i];
 
+                // Two main panel children can resolve to the same role.
+                if (seen.has(role))
+                    continue;
+                seen.add(role);
+
                 // Skip activities button on primary monitor - it already has one
-                if (role === 'activities' && this.monitorIndex === Main.layoutManager.primaryIndex) {
+                if (role === 'activities' && isPrimary) {
                     continue;
                 }
 
@@ -1601,10 +1671,30 @@ const MultiMonitorsPanel = GObject.registerClass(
                         indicator._syncMirrorPresence();
 
                     // An empty indicator keeps its slot instead of being
-                    // destroyed: it is already hidden via the source's
-                    // notify::visible and refills itself when content returns.
+                    // destroyed (_addToPanelBox places it hidden) and refills
+                    // itself when content returns.
+                    if (box === this._centerBox) {
+                        this._addToPanelBox(role, indicator, i, box);
+                        continue;
+                    }
+
+                    const container = indicator.container || indicator;
+                    // A hidden empty mirror already in the box stays where it
+                    // is and anchors nothing; it is ordered once it has content.
+                    if (indicator._isEmpty && container.get_parent() === box)
+                        continue;
+                    const children = box.get_children();
+                    const index = container.get_parent() === box ? children.indexOf(container) : -1;
+                    const previousIndex = previous ? children.indexOf(previous) : -1;
+                    let position;
+                    if (index >= 0 && index > previousIndex)
+                        position = index; // already in order: stays put
+                    else if (previous)
+                        position = index >= 0 ? previousIndex : previousIndex + 1; // right after previous
+                    else
+                        position = nChildren;
                     this._addToPanelBox(role, indicator, position, box);
-                    position++;
+                    previous = container;
                 }
             }
         }

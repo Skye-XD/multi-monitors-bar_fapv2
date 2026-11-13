@@ -18,13 +18,9 @@ class StIcon extends Actor { }
 class StLabel extends Actor { }
 
 const context = vm.createContext({ St: { Icon: StIcon, Label: StLabel }, console });
-{
-    const start = source.indexOf('const _giconIds');
-    assert.ok(start > 0, 'could not locate giconIdentity');
-    vm.runInContext(source.slice(start, source.indexOf('\n}\n', start) + 3), context);
-}
-const sig = vm.runInContext(`({${method('_mirrorSourceSignature(actor) {')}})._mirrorSourceSignature`, context);
-const signatureOf = src => sig.call({}, src);
+const helpers = vm.runInContext(`({${method('_mirrorSourceSignature(actor) {')},
+    ${method('_gIconSignatureId(gicon) {')}})`, context);
+const signatureOf = src => helpers._mirrorSourceSignature.call(helpers, src);
 
 // A tray icon that has not changed must produce a stable signature, so the
 // 5s poll does not destroy and recreate the copies (which reads as flicker).
